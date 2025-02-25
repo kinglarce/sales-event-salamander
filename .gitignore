@@ -1,0 +1,11 @@
+# Docker
+.docker/
+dump/
+
+.DS_Store
+.idea
+__pycache__
+.env
+venv
+/data
+/references
