@@ -43,8 +43,6 @@ class Ticket(Base):
     seller_id = Column(String)
     ticket_name = Column(String)
     category_name = Column(String)
-    real_price = Column(Integer)
-    regular_price = Column(Integer)
     barcode = Column(String, unique=True)
     created_at = Column(DateTime)
     updated_at = Column(DateTime)

@@ -7,5 +7,6 @@ dump/
 __pycache__
 .env
 venv
-/data
-/references
+data/
+references/
+logs/

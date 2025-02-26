@@ -22,3 +22,11 @@ coverage.xml
 .gitignore
 README.md
 dump/ 
+data/
+references/
+logs/
+.idea
+.vscode
+.env
+.venv
+.DS_Store
