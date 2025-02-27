@@ -3,7 +3,7 @@ import requests
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy import create_engine, text, func
+from sqlalchemy import create_engine, text, func, inspect
 from models.database import Base, Event, Ticket, TicketTypeSummary, SummaryReport
 import time
 from math import ceil
@@ -45,11 +45,17 @@ class TicketCategory(Enum):
     DOUBLES = "double"
     RELAY = "relay"
     SPECTATOR = "spectator"
+    EXTRA = "extra"
+    
+class TicketEventDay(Enum):
+    FRIDAY = "friday"
+    SATURDAY = "saturday"
+    SUNDAY = "sunday"
 
 class VivenuAPI:
     def __init__(self, token: str):
         self.token = token
-        self.base_url = "https://vivenu.com/api"
+        self.base_url = os.getenv('EVENT_API_BASE_URL', '')  # Use env var with fallback
         self.headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
@@ -73,18 +79,18 @@ class VivenuAPI:
 
 def get_db_session(schema: str, skip_fetch: bool = False):
     """Create database session with specific schema"""
-    engine = create_engine("postgresql://postgres:postgres@postgres:5432/vivenu_db")
+    # Use environment variables for database connection
+    db_url = f"postgresql://{os.getenv('POSTGRES_USER')}:{os.getenv('POSTGRES_PASSWORD')}@{os.getenv('POSTGRES_HOST')}:{os.getenv('POSTGRES_PORT')}/{os.getenv('POSTGRES_DB')}"
+    engine = create_engine(db_url)
     
     if not skip_fetch:
         try:
             # Create schema if it doesn't exist and set it as default
             with engine.connect() as conn:
-                # Create schema
                 conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
-            
-                # Drop existing tables in the correct order
+                
+                # Drop existing tables except summary_report
                 conn.execute(text(f"""
-                    DROP TABLE IF EXISTS {schema}.summary_report CASCADE;
                     DROP TABLE IF EXISTS {schema}.ticket_type_summary CASCADE;
                     DROP TABLE IF EXISTS {schema}.tickets CASCADE;
                     DROP TABLE IF EXISTS {schema}.events CASCADE;
@@ -95,16 +101,42 @@ def get_db_session(schema: str, skip_fetch: bool = False):
                 conn.execute(text(f"SET search_path TO {schema}"))
                 conn.commit()
                 
-                logger.info(f"Successfully reset schema {schema}")
+                logger.info(f"Successfully set up schema {schema}")
         except Exception as e:
             logger.error(f"Error setting up schema {schema}: {e}")
             raise
 
         try:
-            # Create all tables in the correct schema
+            # Set schema for all tables
             Base.metadata.schema = schema
-            Base.metadata.create_all(engine, checkfirst=False)
+            
+            # Create tables using ORM
+            tables_to_create = []
+            summary_report_table = None
+            
+            # Separate summary_report table and other tables
+            for name, table in Base.metadata.tables.items():
+                if name.endswith('summary_report'):
+                    summary_report_table = table
+                else:
+                    tables_to_create.append(table)
+            
+            # Create other tables (always recreate)
+            Base.metadata.create_all(
+                engine, 
+                tables=tables_to_create,
+                checkfirst=False
+            )
+            
+            # Create summary_report table only if it doesn't exist
+            if summary_report_table is not None:
+                inspector = inspect(engine)
+                if 'summary_report' not in inspector.get_table_names(schema=schema):
+                    logger.info(f"Creating summary_report table in schema {schema}")
+                    summary_report_table.create(engine, checkfirst=True)
+            
             logger.info(f"Successfully created tables in schema {schema}")
+            
         except Exception as e:
             logger.error(f"Error creating tables in schema {schema}: {e}")
             raise
@@ -121,17 +153,17 @@ def get_db_session(schema: str, skip_fetch: bool = False):
 def verify_tables(session, schema: str):
     """Verify that tables exist with correct columns"""
     try:
-        # Check if ticket_category column exists
+        # Check if event_id column exists
         result = session.execute(text(f"""
             SELECT column_name 
             FROM information_schema.columns 
             WHERE table_schema = '{schema}' 
             AND table_name = 'tickets' 
-            AND column_name = 'ticket_category'
+            AND column_name = 'event_id'
         """))
         
         if not result.fetchone():
-            logger.error(f"ticket_category column not found in {schema}.tickets")
+            logger.error(f"event_id column not found in {schema}.tickets")
             raise Exception("Required columns not found")
             
         logger.info(f"Table verification successful for schema {schema}")
@@ -140,15 +172,28 @@ def verify_tables(session, schema: str):
         raise
 
 def determine_ticket_group(ticket_name: str) -> TicketCategory:
-    """Determine basic ticket group (single, double, relay, spectator)"""
+    """Determine basic ticket group (single, double, relay, spectator, extra)"""
     name_lower = ticket_name.lower()
-    if 'double' in name_lower:
+    if 'friend' in name_lower or 'sportograf' in name_lower or 'transfer' in name_lower:
+        return TicketCategory.EXTRA 
+    elif 'double' in name_lower:
         return TicketCategory.DOUBLES
     elif 'relay' in name_lower:
         return TicketCategory.RELAY
     elif 'spectator' in name_lower:
         return TicketCategory.SPECTATOR
     return TicketCategory.SINGLE
+
+def determine_ticket_event_day(ticket_name: str) -> TicketEventDay:
+    """Determine basic ticket group (friday, saturday, sunday)"""
+    name_lower = ticket_name.lower()
+    if 'sunday' in name_lower:
+        return TicketEventDay.SUNDAY 
+    elif 'saturday' in name_lower:
+        return TicketEventDay.SATURDAY
+    elif 'friday' in name_lower:
+        return TicketEventDay.FRIDAY
+    return TicketEventDay.SATURDAY
 
 # Add logging configuration
 class LogConfig:
@@ -162,7 +207,7 @@ class LogConfig:
         else:
             logger.setLevel(logging.INFO)
 
-def process_ticket_data(session, ticket_data, event_data, schema, target_event_id):
+def process_ticket_data(session, ticket_data, event_data, schema):
     """Process ticket data and store in database"""
     try:
         ticket_id = ticket_data.get("_id")
@@ -171,9 +216,9 @@ def process_ticket_data(session, ticket_data, event_data, schema, target_event_i
         if LogConfig.DEBUG_ENABLED:
             logger.debug(f"Schema: {schema}, Event ID: {event_id}, Ticket ID: {ticket_id}")
 
-        # Skip if this ticket is not for our target event
+        # Check if event exist
         if event_id != ticket_data.get("eventId"):
-            logger.debug(f"Skipping ticket {ticket_id} - not for target event {target_event_id}")
+            logger.debug(f"Skipping ticket {ticket_id} - event {event_id} not found in database")
             return None
 
         # Check if event exists in database
@@ -181,59 +226,45 @@ def process_ticket_data(session, ticket_data, event_data, schema, target_event_i
         if not event:
             logger.debug(f"Skipping ticket {ticket_id} - event {event_id} not found in database")
             return None
-        
 
-        try:
-            ticket = Ticket(
-                id=ticket_data.get("_id"),
-                region_schema=schema,
-                name=ticket_data.get("name"),
-                transaction_id=ticket_data.get("transactionId"),
-                ticket_type_id=ticket_data.get("ticketTypeId"),
-                currency=ticket_data.get("currency"),
-                status=ticket_data.get("status"),
-                personalized=ticket_data.get("personalized", False),
-                expired=ticket_data.get("expired", False),
-                event_id=ticket_data.get("eventId"),
-                seller_id=ticket_data.get("sellerId"),
-                ticket_name=ticket_data.get("ticketName"),
-                category_name=ticket_data.get("categoryName"),
-                barcode=ticket_data.get("barcode"),
-                created_at=ticket_data.get("createdAt"),
-                updated_at=ticket_data.get("updatedAt"),
-                city=ticket_data.get("city"),
-                country=ticket_data.get("country"),
-                customer_id=ticket_data.get("customerId"),
-                email=ticket_data.get("email"),
-                firstname=ticket_data.get("firstname"),
-                lastname=ticket_data.get("lastname"),
-                postal=ticket_data.get("postal"),
-                ticket_category="spectator" if "SPECTATOR" in ticket_data.get("ticketName", "").upper() else "regular"
-            )
-            
-            logger.debug(f"Created ticket object for {ticket_id}")
-            
-            session.merge(ticket)
-            session.flush()
-            logger.debug(f"Successfully merged and flushed ticket {ticket_id}")
-            return ticket
+        # Get ticket name and check for None
+        ticket_name = ticket_data.get("name")
+        if ticket_name is None:
+            logger.warning(f"Ticket name is None for ticket ID {ticket_id}. Skipping this ticket.")
+            return None  # Skip this ticket if the name is None
 
-        except Exception as e:
-            logger.error(f"""
-            =======
-            Failed to process ticket:
-            Schema: {schema}
-            Event ID: {event_id}
-            Ticket ID: {ticket_id}
-            Full ticket data: {ticket_data}
-            Error: {str(e)}
-            =======
-            """)
-            session.rollback()
-            return None
+        # Create the Ticket object with all relevant fields
+        ticket = Ticket(
+            id=ticket_data.get("_id"),
+            region_schema=schema,
+            name=ticket_name,
+            transaction_id=ticket_data.get("transactionId"),
+            ticket_type_id=ticket_data.get("ticketTypeId"),
+            currency=ticket_data.get("currency"),
+            status=ticket_data.get("status"),
+            personalized=ticket_data.get("personalized", False),
+            expired=ticket_data.get("expired", False),
+            event_id=ticket_data.get("eventId"),
+            seller_id=ticket_data.get("sellerId"),
+            ticket_name=ticket_data.get("ticketName"),
+            category_name=ticket_data.get("categoryName"),
+            barcode=ticket_data.get("barcode"),
+            created_at=ticket_data.get("createdAt"),
+            updated_at=ticket_data.get("updatedAt"),
+            city=ticket_data.get("city"),
+            country=ticket_data.get("country"),
+            customer_id=ticket_data.get("customerId"),
+            email=ticket_data.get("email"),
+            firstname=ticket_data.get("firstname"),
+            lastname=ticket_data.get("lastname"),
+            postal=ticket_data.get("postal")
+        )
+
+        session.add(ticket)
+        return ticket
 
     except Exception as e:
-        logger.error(f"Error in process_ticket_data: {str(e)}", exc_info=True)
+        logger.error(f"Error processing ticket data: {e}")
         return None
 
 def parse_datetime(dt_str):
@@ -245,7 +276,7 @@ def parse_datetime(dt_str):
     except (ValueError, AttributeError):
         return None
 
-def update_ticket_summary(session, event_id: str, schema: str):
+def update_ticket_summary(session, schema: str, event_id: str):
     """Update ticket type summary for an event"""
     try:
         # Get event details first
@@ -254,54 +285,48 @@ def update_ticket_summary(session, event_id: str, schema: str):
             logger.warning(f"Event {event_id} not found for summary update")
             return
 
+        # Create a lookup dictionary for ticket names using ticket_type_id
+        ticket_name_map = {ticket.get('id'): ticket.get('name') for ticket in event.tickets}
+        
         # Get ticket counts grouped by type and category
         ticket_counts = (
             session.query(
                 Ticket.event_id,
                 Ticket.ticket_type_id,
-                Ticket.ticket_name,
-                Ticket.ticket_category,
                 func.count().label('total_count')
             )
             .filter(Ticket.event_id == event_id)
             .group_by(
                 Ticket.event_id,
-                Ticket.ticket_type_id,
-                Ticket.ticket_name,
-                Ticket.ticket_category
+                Ticket.ticket_type_id
             )
             .all()
         )
 
         # Update summary records
         for count in ticket_counts:
+            ticket_name = ticket_name_map.get(count.ticket_type_id, '')
             summary_id = f"{count.event_id}_{count.ticket_type_id}"
             
             summary = session.get(TicketTypeSummary, summary_id)
             if summary:
                 summary.total_count = count.total_count
-                summary.event_name = event.name
-                # Update group_name if it's null
-                if not summary.group_name:
-                    summary.group_name = determine_ticket_group(count.ticket_name).value
             else:
                 summary = TicketTypeSummary(
                     id=summary_id,
                     event_id=count.event_id,
                     event_name=event.name,
                     ticket_type_id=count.ticket_type_id,
-                    ticket_name=count.ticket_name,
-                    ticket_category=count.ticket_category,
-                    total_count=count.total_count,
-                    group_name=determine_ticket_group(count.ticket_name).value
+                    ticket_name=ticket_name,
+                    ticket_category=determine_ticket_group(ticket_name).value,
+                    ticket_event_day=determine_ticket_event_day(ticket_name).value,
+                    total_count=count.total_count
                 )
                 session.add(summary)
 
         session.commit()
         
-        # Update summary report after ticket summary is updated
-        update_summary_report(session, event_id, schema)
-        
+
         logger.info(f"Updated ticket summary for event: {event_id} in schema: {schema}")
 
     except Exception as e:
@@ -309,114 +334,60 @@ def update_ticket_summary(session, event_id: str, schema: str):
         logger.error(f"Error updating ticket summary in schema {schema}: {e}")
         raise
 
-def update_summary_report(session, event_id: str, schema: str):
-    """Update summary report with only basic categories"""
+def get_ticket_summary(session, schema: str, event_id: str) -> Dict[str, SummaryReport]:
+    """Get the summarized ticket counts for the event."""
     try:
-        # Get all ticket type summaries for this event
-        summaries = session.query(TicketTypeSummary).filter(
-            TicketTypeSummary.event_id == event_id,
-            TicketTypeSummary.ticket_name.ilike('HYROX%') | 
-            TicketTypeSummary.ticket_name.ilike('%Spectator%')
-        ).all()
-
-        # Initialize collections for different categories
-        basic_groups = defaultdict(set)  # For single, double, relay, spectator
+        # Query to get the total counts for each ticket group and collect ticket info
+        with open('sql/get_summary_report.sql', 'r') as file:
+            sql_template = file.read()
         
-        # First clear existing summary reports for this event
-        session.query(SummaryReport).filter(
-            SummaryReport.event_id == event_id
-        ).delete()
+        # Replace {SCHEMA} with the actual schema and wrap in text()
+        query = text(sql_template.replace('{SCHEMA}', schema))
+
+        results = session.execute(query, {"event_id": event_id}).fetchall()
         
-        # Process each summary and add to basic groups
-        for summary in summaries:
-            basic_group = determine_ticket_group(summary.ticket_name).value
-            basic_groups[basic_group].add(summary.ticket_type_id)
-            
-            # Also add spectator tickets to their own group
-            if basic_group == 'spectator':
-                basic_groups['Spectators'].add(summary.ticket_type_id)
+        # Convert results to a dictionary with additional info
+        summary_data = {}
+        for row in results:
+            summary_data[row[0]] = {
+                'total_count': row[3],
+                'ticket_type_ids': row[1],
+                'ticket_names': row[2]
+            }
+        
+        return summary_data
 
-        # Create summary reports for basic groups
-        for group, tickets in basic_groups.items():
-            if group == 'spectator':
-                continue  # Skip the lowercase 'spectator' as we use 'Spectator' instead
-                
-            group_name = group
-            if group != 'Spectators':
-                group_name = f"All_{group}s"
-                
-            total = sum(
-                summary.total_count 
-                for summary in summaries 
-                if summary.ticket_type_id in tickets
+    except Exception as e:
+        logger.error(f"Error getting ticket summary: {e}")
+        return {}
+
+def update_summary_report(session, schema: str, event_id: str):
+    """Update summary report with current ticket counts while preserving history"""
+    try:
+        logger.info(f"Updating summary report for event {event_id} in schema {schema}")
+        current_time = datetime.now()
+        summary_data = get_ticket_summary(session, schema, event_id)
+        
+        for ticket_group, data in summary_data.items():
+            logger.info(f"Inserting summary for ticket group: {ticket_group}")
+            summary = SummaryReport(
+                event_id=event_id,
+                ticket_group=ticket_group,
+                total_count=data.get('total_count', 0),
+                ticket_type_ids=data.get('ticket_type_ids'),
+                ticket_names=data.get('ticket_names'),
+                created_at=current_time,
+                updated_at=current_time
             )
-            
-            # Gather ticket names for the current group
-            ticket_names = [
-                summary.ticket_name 
-                for summary in summaries 
-                if summary.ticket_type_id in tickets
-            ]
-
-            create_summary_report(
-                session,
-                event_id,
-                group_name,
-                tickets,
-                total,
-                ticket_names
-            )
-
-        # Create total summary (excluding spectators)
-        non_spectator_tickets = set()
-        non_spectator_total = 0
-        for summary in summaries:
-            if not summary.ticket_name.upper().__contains__('SPECTATOR'):
-                non_spectator_tickets.add(summary.ticket_type_id)
-                non_spectator_total += summary.total_count
-
-        # Gather ticket names for the total excluding spectators
-        total_ticket_names = [
-            summary.ticket_name 
-            for summary in summaries 
-            if summary.ticket_type_id in non_spectator_tickets
-        ]
-
-        create_summary_report(
-            session,
-            event_id,
-            "Total_excluding_spectators",
-            non_spectator_tickets,
-            non_spectator_total,
-            total_ticket_names
-        )
-
+            session.add(summary)
+        
         session.commit()
-        logger.info(f"Updated summary report for event: {event_id}")
-
+        logger.info(f"Summary report updated for event {event_id}")
+        
     except Exception as e:
         session.rollback()
         logger.error(f"Error updating summary report: {e}")
         raise
-
-def create_summary_report(session, event_id: str, category: str, tickets: Set[str], total_count: int, ticket_names: List[str]):
-    """Helper function to create or update a summary report"""
-    if not tickets:
-        return
-
-    summary_id = f"{event_id}_{category.lower()}"
-    
-    summary = SummaryReport(
-        id=summary_id,
-        event_id=event_id,
-        ticket_type_ids=list(tickets),
-        ticket_group=category,
-        total_count=total_count,
-        ticket_names=ticket_names  # Include ticket names in the summary report
-    )
-    session.add(summary)
-    
-    logger.info(f"Created summary for {category} - Total count: {total_count}")
 
 def create_event(session: sessionmaker, event_data: dict, schema: str) -> Event:
     """Create or update event record"""
@@ -432,7 +403,8 @@ def create_event(session: sessionmaker, event_data: dict, schema: str) -> Event:
         sell_end=parse_datetime(event_data.get('sellEnd')),
         timezone=event_data.get('timezone'),
         cartAutomationRules=event_data.get('cartAutomationRules', []),
-        groups=event_data.get('groups', [])
+        groups=event_data.get('groups', []),
+        tickets=[{'id': ticket['_id'], 'name': ticket['name']} for ticket in event_data.get('tickets', [])]
     )
     
     try:
@@ -444,10 +416,10 @@ def create_event(session: sessionmaker, event_data: dict, schema: str) -> Event:
         logger.error(f"Error creating event: {e}")
         raise
 
-def process_batch(session, tickets, event_data, schema, target_event_id):
+def process_batch(session, tickets, event_data, schema):
     processed = 0
     for ticket in tickets:
-        result = process_ticket_data(session, ticket, event_data, schema, target_event_id)
+        result = process_ticket_data(session, ticket, event_data, schema)
         if result:
             processed += 1
 
@@ -463,8 +435,8 @@ def ingest_data(token: str, event_id: str, schema: str, skip_fetch: bool = False
     
     if skip_fetch:
         logger.info("Skipping API fetch. Proceeding with update_ticket_summary and update_summary_report.")
-        update_ticket_summary(session, event_id, schema)
-        update_summary_report(session, event_id, schema)
+        update_ticket_summary(session, schema, event_id)
+        update_summary_report(session, schema, event_id)
         session.close()
         return
     
@@ -525,7 +497,7 @@ def ingest_data(token: str, event_id: str, schema: str, skip_fetch: bool = False
                         offset = future_to_offset[future]
                         
                         logger.info(f"Processing {len(tickets)} tickets from offset {offset}")
-                        batch_processed = process_batch(session, tickets, found_event_data, schema, event_id)
+                        batch_processed = process_batch(session, tickets, found_event_data, schema)
                         processed_tickets += batch_processed
                         
                         # Commit after each batch
@@ -547,8 +519,8 @@ def ingest_data(token: str, event_id: str, schema: str, skip_fetch: bool = False
         logger.info(f"Successfully processed {processed_tickets} tickets for event {event_id}")
         
         # Update summaries
-        update_ticket_summary(session, event_id, schema)
-        update_summary_report(session, event_id, schema)
+        update_ticket_summary(session, schema, event_id)
+        update_summary_report(session, schema, event_id)
         
     except Exception as e:
         session.rollback()

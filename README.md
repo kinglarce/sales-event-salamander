@@ -13,31 +13,8 @@ A robust data pipeline for fetching and processing Vivenu event and ticket data,
 - Docker containerization
 - Environment-based configuration
 - Database visualization with pgweb
-
-## Project Structure
-├── docker/
-│   └── dump/
-├── src/
-│   ├── __init__.py
-│   ├── config/
-│   │   ├── __init__.py
-│   │   └── settings.py
-│   ├── core/
-│   │   ├── __init__.py
-│   │   ├── api_client.py
-│   │   ├── database.py
-│   │   └── models.py
-│   ├── pipelines/
-│   │   ├── __init__.py
-│   │   ├── events.py
-│   │   └── tickets.py
-│   └── main.py
-├── Dockerfile
-├── docker-compose.yml
-├── .env
-├── .env.example
-├── requirements.txt
-└── README.md
+- Automated data ingestion via cron jobs
+- Real-time Slack notifications
 
 ## Prerequisites
 
@@ -48,57 +25,173 @@ A robust data pipeline for fetching and processing Vivenu event and ticket data,
 ## Configuration
 
 1. Create a `.env` file based on `.env.example`:
-```
+
+```env
 # Database settings
-POSTGRES_USER=your_user
-POSTGRES_PASSWORD=your_password
-POSTGRES_HOST=
-POSTGRES_PORT=
-POSTGRES_DB=
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=your_secure_password
+POSTGRES_HOST=postgres
+POSTGRES_PORT=5432
+POSTGRES_DB=vivenu_db
 
-# Region configurations
-REGION_CONFIGStaiwan_token=your_taiwan_token
-REGION_CONFIGStaiwan_event_id=your_taiwan_event_id
-REGION_CONFIGSaustralia_token=your_australia_token
-REGION_CONFIGSaustralia_event_id=your_australia_event_id
+# Slack config
+SLACK_API_TOKEN=xoxb-your-slack-token
+SLACK_CHANNEL=your-channel-name
+
+# Ticket analytics config
+PROJECTION_MINUTES=3
+HISTORY_MINUTES=15
+
+# API config
+EVENT_API_BASE_URL=https://vivenu.com/api
+
+# Event configurations
+EVENT_CONFIGS__region1__token=your_api_token_1
+EVENT_CONFIGS__region1__event_id=your_event_id_1
+EVENT_CONFIGS__region1__schema_name=region1
+
+EVENT_CONFIGS__region2__token=your_api_token_2
+EVENT_CONFIGS__region2__event_id=your_event_id_2
+EVENT_CONFIGS__region2__schema_name=region2
 ```
-
-## Database Schema
-
-The pipeline creates the following tables:
-
-1. `events` - Stores event information
-2. `tickets` - Stores ticket information
-3. `ticket_type_summary` - Summarizes ticket counts by type
-4. `category_capacities` - Tracks capacity limits and current counts
 
 ## Installation & Usage
 
 ### Using Docker (Recommended)
 
-1. Build and start the containers:
-```
+1. Build and start all containers:
+```bash
 docker-compose up --build
 ```
-2. To run in detached mode:
-```
+
+2. Run in detached mode:
+```bash
 docker-compose up -d
 ```
+
 3. View logs:
-```
+```bash
+# View all container logs
+docker-compose logs -f
+
+# View specific container logs
 docker-compose logs -f app
+docker-compose logs -f cron
 ```
 
-### Accessing pgweb
+4. Stop containers:
+```bash
+docker-compose down
+```
 
-Once the containers are running, you can access the pgweb interface at:
+### Manual Data Ingestion
+
+Run the ingest script manually:
+```bash
+# Regular ingestion
+python ingest.py
+
+# With debug logging
+python ingest.py --debug
+
+# Skip API fetch (only update summaries)
+python ingest.py --skip_fetch
+```
+
+### Running Analytics
+
+Run the ticket analytics script:
+```bash
+python ticket_analytics.py
+```
+
+## Cron Jobs
+
+The pipeline includes automated data ingestion and analytics via cron jobs. The schedule is configured in `Dockerfile.cron`:
+
+```dockerfile
+# Default schedule (every 5 minutes)
+*/5 * * * * cd /app && python ingest.py >> /app/logs/cron.log 2>&1
+
+# Analytics schedule (every 15 minutes)
+*/15 * * * * cd /app && python ticket_analytics.py >> /app/logs/analytics.log 2>&1
+```
+
+To modify the schedule:
+1. Edit `Dockerfile.cron`
+2. Rebuild the cron container:
+```bash
+docker-compose up -d --build cron
+```
+
+## Database Schema
+
+The pipeline creates the following tables for each configured region:
+
+1. `events` - Stores event information
+2. `tickets` - Stores ticket information
+3. `ticket_type_summary` - Summarizes ticket counts by type
+4. `summary_report` - Stores historical ticket count data
+
+## Accessing pgweb
+
+Once the containers are running, access the pgweb interface at:
 ```
 http://localhost:8081
 ```
 
-pgweb provides a web-based interface to:
-- Browse database tables and schemas
-- Execute SQL queries
-- Export data
-- View table relationships
-- Monitor database statistics
+pgweb provides:
+- Database table browsing
+- SQL query execution
+- Data export
+- Table relationship visualization
+- Database statistics monitoring
+
+## Slack Notifications
+
+The pipeline sends automated reports to Slack including:
+- Current ticket counts
+- Detailed breakdowns by ticket type
+- Growth analysis
+- Sales projections
+
+Configure Slack notifications in `.env`:
+```env
+SLACK_API_TOKEN=your-token
+SLACK_CHANNEL=your-channel
+```
+
+## Troubleshooting
+
+1. Check container status:
+```bash
+docker-compose ps
+```
+
+2. View container logs:
+```bash
+docker-compose logs -f [service_name]
+```
+
+3. Access container shell:
+```bash
+docker-compose exec [service_name] bash
+```
+
+4. Reset database:
+```bash
+docker-compose down -v
+docker-compose up -d
+```
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Commit your changes
+4. Push to the branch
+5. Create a Pull Request
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.

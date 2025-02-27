@@ -1,0 +1,47 @@
+FROM python:3.9-slim
+
+# Install cron and required packages
+RUN apt-get update && apt-get -y install cron
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements and install dependencies
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
+# Copy application code and SQL files
+COPY . .
+
+# Ensure SQL directory exists and has the correct permissions
+RUN mkdir -p sql && chmod -R 755 sql
+
+# Create logs directory
+RUN mkdir -p logs
+
+# Create a script to load environment and run the analytics
+RUN echo '#!/bin/bash\n\
+source /app/.env\n\
+cd /app\n\
+python scripts/run_analytics.py >> /app/logs/cron.log 2>&1' > /app/run_cron.sh
+
+# Make the script executable
+RUN chmod +x /app/run_cron.sh
+
+# Create the cron job file
+RUN echo "*/10 * * * * /app/run_cron.sh" > /etc/cron.d/analytics-cron
+
+# Give execution rights to the cron job
+RUN chmod 0644 /etc/cron.d/analytics-cron
+
+# Apply cron job
+RUN crontab /etc/cron.d/analytics-cron
+
+# Create the log file
+RUN touch /app/logs/cron.log
+
+# Set Python path in environment
+ENV PYTHONPATH=/app
+
+# Start cron in foreground
+CMD printenv > /app/.env && cron -f 

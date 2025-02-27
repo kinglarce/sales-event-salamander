@@ -1,6 +1,8 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, JSON, Boolean, UniqueConstraint, MetaData, Float
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, JSON, Boolean, UniqueConstraint, MetaData, Float, ARRAY
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.sql import func
+from sqlalchemy.sql import text
 
 # Create a base class that will use schema-bound metadata
 metadata = MetaData()
@@ -21,11 +23,8 @@ class Event(Base):
     timezone = Column(String)
     cartAutomationRules = Column(JSON, default=[])
     groups = Column(JSON)
-    categories = Column(JSON)
     tickets = Column(JSON)
-    is_active = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, onupdate=datetime.utcnow)
 
 class Ticket(Base):
     __tablename__ = "tickets"
@@ -53,7 +52,6 @@ class Ticket(Base):
     firstname = Column(String)
     lastname = Column(String)
     postal = Column(String)
-    ticket_category = Column(String)  # 'regular' or 'spectator'
 
 class TicketTypeSummary(Base):
     __tablename__ = "ticket_type_summary"
@@ -64,7 +62,7 @@ class TicketTypeSummary(Base):
     ticket_type_id = Column(String)
     ticket_name = Column(String)
     ticket_category = Column(String)
-    group_name = Column(String)
+    ticket_event_day = Column(String)
     total_count = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -72,11 +70,16 @@ class TicketTypeSummary(Base):
 class SummaryReport(Base):
     __tablename__ = "summary_report"
     
-    id = Column(String, primary_key=True) 
-    event_id = Column(String, ForeignKey("events.id"))
-    ticket_type_ids = Column(JSON)  # Store all related ticket type IDs (source + target)
-    ticket_names = Column(JSON)  
-    ticket_group = Column(String)  # 'single', 'double', or 'relay'
-    total_count = Column(Integer)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # Simple auto-incrementing ID
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(String, nullable=False)
+    ticket_group = Column(String, nullable=False)
+    total_count = Column(Integer, nullable=False)
+    ticket_type_ids = Column(ARRAY(String))
+    ticket_names = Column(ARRAY(String))
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+    
+    __table_args__ = (
+        UniqueConstraint('event_id', 'ticket_group', 'created_at', name='unique_summary_timestamp'),
+    )

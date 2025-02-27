@@ -28,7 +28,7 @@ services:
     ports:
       - "8081:8081"
     environment:
-      PGWEB_DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+      PGWEB_DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable"
     restart: always
     networks:
       - vivenu-net
@@ -44,6 +44,22 @@ services:
       - .env
     volumes:
       - .:/app
+    networks:
+      - vivenu-net
+
+  cron:
+    build:
+      context: .
+      dockerfile: Dockerfile.cron
+    volumes:
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: always
+    depends_on:
+      - postgres
     networks:
       - vivenu-net
 

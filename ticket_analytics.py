@@ -1,7 +1,7 @@
 import os
+import json
 import logging
 import pandas as pd
-import numpy as np
 from datetime import datetime, timedelta
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
@@ -9,8 +9,8 @@ from models.database import Base
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from dotenv import load_dotenv
-import json
-from typing import Dict, List, Optional, Tuple, Any, Union
+from typing import Dict, List, Optional, Any
+import pytz
 
 # Configure logging
 logging.basicConfig(
@@ -28,17 +28,21 @@ class DatabaseManager:
     
     def __init__(self, schema: str):
         self.schema = schema
-        self.engine = create_engine("postgresql://postgres:postgres@postgres:5432/vivenu_db")
+        # Use environment variables for database connection
+        db_url = f"postgresql://{os.getenv('POSTGRES_USER')}:{os.getenv('POSTGRES_PASSWORD')}@{os.getenv('POSTGRES_HOST')}:{os.getenv('POSTGRES_PORT')}/{os.getenv('POSTGRES_DB')}"
+        self.engine = create_engine(db_url)
         Session = sessionmaker(bind=self.engine)
         self.session = Session()
         
         # Set schema for metadata
         Base.metadata.schema = schema
     
-    def execute_query(self, query: str, params: Dict = None) -> List[Tuple]:
+    def execute_query(self, query: str, params: Dict = None) -> List:
         """Execute a SQL query with parameters"""
         try:
-            result = self.session.execute(text(query), params or {})
+            # Ensure query is a string and wrap it in text()
+            query_text = text(query) if isinstance(query, str) else query
+            result = self.session.execute(query_text, params or {})
             return result.fetchall()
         except Exception as e:
             logger.error(f"Database query error: {e}")
@@ -60,16 +64,109 @@ class DatabaseManager:
         """Close the database session"""
         self.session.close()
 
+class TicketDataProvider:
+    """Provides ticket data from the database"""
+    
+    def __init__(self, db_manager: DatabaseManager, event_id: str):
+        self.db = db_manager
+        self.event_id = event_id
+        self.schema = db_manager.schema
+    
+    def get_current_summary(self) -> Dict[str, int]:
+        """Get current summary report data"""
+        try:
+            # Get the latest record for each ticket group
+            query = f"""
+                WITH latest_summary AS (
+                    SELECT 
+                        ticket_group,
+                        total_count,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY ticket_group 
+                            ORDER BY created_at DESC
+                        ) as rn
+                    FROM {self.schema}.summary_report
+                    WHERE event_id = :event_id
+                )
+                SELECT ticket_group, total_count
+                FROM latest_summary
+                WHERE rn = 1
+            """
+            
+            results = self.db.execute_query(query, {"event_id": self.event_id})
+            return {row[0]: row[1] for row in results}
+            
+        except Exception as e:
+            logger.error(f"Error getting current summary: {e}")
+            return {}
+    
+    def get_historical_data(self, minutes: int = 15) -> pd.DataFrame:
+        """Get historical summary report data from the last N minutes"""
+        time_threshold = datetime.now() - timedelta(minutes=minutes)
+        
+        try:
+            query = f"""
+                SELECT 
+                    created_at as date,
+                    ticket_group,
+                    total_count
+                FROM {self.schema}.summary_report
+                WHERE 
+                    event_id = :event_id 
+                    AND created_at >= :time_threshold
+                ORDER BY created_at ASC
+            """
+            
+            results = self.db.execute_query(
+                query, 
+                {"event_id": self.event_id, "time_threshold": time_threshold}
+            )
+            
+            # Convert to DataFrame
+            df = pd.DataFrame(results, columns=['date', 'ticket_group', 'total_count'])
+            
+            if not df.empty:
+                # Pivot the data to get ticket groups as columns
+                pivot_df = df.pivot_table(
+                    index='date',
+                    columns='ticket_group',
+                    values='total_count',
+                    aggfunc='last'
+                ).reset_index()
+                
+                return pivot_df
+            
+            return pd.DataFrame()
+            
+        except Exception as e:
+            logger.error(f"Error getting historical data: {e}")
+            return pd.DataFrame()
+    
+    def get_detailed_breakdown(self) -> List[Dict[str, Any]]:
+        """Get detailed breakdown using the custom SQL query"""
+        try:
+            # Read the SQL file
+            with open('sql/get_detailed_summary_report.sql', 'r') as file:
+                sql_template = file.read()
+            
+            # Replace {SCHEMA} with the actual schema
+            sql_query = sql_template.replace('{SCHEMA}', self.schema)
+            
+            # Execute the query
+            results = self.db.execute_query(sql_query)
+            return [{"ticket_group": row[0], "total_count": row[1]} for row in results]
+            
+        except Exception as e:
+            logger.error(f"Error getting detailed breakdown: {e}")
+            return []
+
 class DataAnalyzer:
     """Handles data analysis and projections"""
     
-    def __init__(self, db_manager: DatabaseManager):
-        self.db = db_manager
-    
-    def calculate_growth(self, df: pd.DataFrame) -> Dict:
+    def calculate_growth(self, df: pd.DataFrame) -> Optional[Dict]:
         """Calculate growth metrics from historical data"""
         if df.empty or len(df) < 2:
-            return {}
+            return None
         
         # Create a copy to avoid modifying the original
         data = df.copy()
@@ -92,9 +189,9 @@ class DataAnalyzer:
             first_val = first_values[column]
             last_val = last_values[column]
             
-            if pd.notna(first_val) and pd.notna(last_val):
+            if pd.notna(first_val) and pd.notna(last_val) and first_val > 0:
                 abs_change = last_val - first_val
-                pct_change = (abs_change / first_val * 100) if first_val > 0 else 0
+                pct_change = (abs_change / first_val * 100)
                 
                 changes[column] = {
                     'first_value': first_val,
@@ -103,27 +200,13 @@ class DataAnalyzer:
                     'percent_change': pct_change
                 }
         
-        # Calculate time period
-        if isinstance(data.index[0], datetime) and isinstance(data.index[-1], datetime):
-            time_diff = data.index[-1] - data.index[0]
-            period = {
-                'days': time_diff.days,
-                'hours': time_diff.seconds // 3600,
-                'minutes': (time_diff.seconds % 3600) // 60
-            }
-        else:
-            period = {'days': 0, 'hours': 0, 'minutes': 0}
-        
-        return {
-            'changes': changes,
-            'period': period
-        }
+        return {'changes': changes}
     
-    def project_future_sales(self, df: pd.DataFrame, projection_minutes: int = 3) -> pd.DataFrame:
+    def project_future_sales(self, df: pd.DataFrame, projection_minutes: int = 3) -> Optional[pd.DataFrame]:
         """Project future ticket sales based on historical data for a specified number of minutes"""
         if df.empty or len(df) < 2:
             logger.warning("Not enough historical data for projections")
-            return pd.DataFrame()
+            return None
         
         # Create a copy of the dataframe
         data = df.copy()
@@ -189,156 +272,20 @@ class DataAnalyzer:
         
         return projections
 
-class TicketDataProvider:
-    """Provides ticket data from the database"""
-    
-    def __init__(self, db_manager: DatabaseManager, event_id: str):
-        self.db = db_manager
-        self.event_id = event_id
-        self.schema = db_manager.schema
-    
-    def get_current_summary(self) -> Dict[str, int]:
-        """Get current summary report data"""
-        try:
-            # First check if the table exists
-            if self.db.check_table_exists('summary_report'):
-                # Query with explicit schema
-                query = f"""
-                    SELECT ticket_group, total_count
-                    FROM {self.schema}.summary_report
-                    WHERE event_id = :event_id
-                """
-                
-                results = self.db.execute_query(query, {"event_id": self.event_id})
-                return {row[0]: row[1] for row in results}
-            else:
-                logger.warning(f"Table {self.schema}.summary_report does not exist")
-                # Fall back to getting data from ticket_type_summary
-                return self.get_summary_from_ticket_types()
-        
-        except Exception as e:
-            logger.error(f"Error getting current summary: {e}")
-            return {}
-    
-    def get_detailed_breakdown(self) -> List[Dict[str, Any]]:
-        """Get detailed breakdown using the custom SQL query"""
-        try:
-            # Read the SQL file
-            with open('sql/get_summary_report.sql', 'r') as file:
-                sql_template = file.read()
-            
-            # Replace {SCHEMA} with the actual schema
-            sql_query = sql_template.replace('{SCHEMA}', self.schema)
-            
-            # Execute the query
-            results = self.db.execute_query(sql_query)
-            
-            # Return as a list of dictionaries for easier formatting
-            return [{"ticket_group": row[0], "total_count": row[1]} for row in results]
-            
-        except Exception as e:
-            logger.error(f"Error getting detailed breakdown: {e}")
-            return []
-    
-    def get_summary_from_ticket_types(self) -> Dict[str, int]:
-        """Get summary data from ticket_type_summary when summary_report doesn't exist"""
-        try:
-            # Query ticket type summary data
-            query = f"""
-                SELECT 
-                    CASE 
-                        WHEN group_name = 'single' THEN 'All_singles'
-                        WHEN group_name = 'double' THEN 'All_doubles'
-                        WHEN group_name = 'relay' THEN 'All_relays'
-                        WHEN group_name = 'spectator' THEN 'Spectators'
-                        ELSE group_name
-                    END as ticket_group,
-                    SUM(total_count) as total_count
-                FROM {self.schema}.ticket_type_summary
-                WHERE event_id = :event_id
-                GROUP BY 
-                    CASE 
-                        WHEN group_name = 'single' THEN 'All_singles'
-                        WHEN group_name = 'double' THEN 'All_doubles'
-                        WHEN group_name = 'relay' THEN 'All_relays'
-                        WHEN group_name = 'spectator' THEN 'Spectators'
-                        ELSE group_name
-                    END
-            """
-            
-            results = self.db.execute_query(query, {"event_id": self.event_id})
-            
-            # Create a summary dictionary
-            summary = {row[0]: row[1] for row in results}
-            
-            # Add total excluding spectators
-            if 'Spectators' in summary:
-                total = sum(count for group, count in summary.items() if group != 'Spectators')
-                summary['Total_excluding_spectators'] = total
-            
-            return summary
-            
-        except Exception as e:
-            logger.error(f"Error getting summary from ticket types: {e}")
-            return {}
-    
-    def get_historical_data(self, minutes: int = 30) -> pd.DataFrame:
-        """Get historical summary report data from the last N minutes"""
-        # Calculate the date N minutes ago
-        start_date = datetime.now() - timedelta(minutes=minutes)
-        
-        try:
-            # Check if summary_report table exists
-            if not self.db.check_table_exists('summary_report'):
-                logger.warning(f"Table {self.schema}.summary_report does not exist for historical data")
-                return pd.DataFrame()
-            
-            # Query historical data from summary_report with timestamps
-            query = f"""
-                SELECT 
-                    ticket_group, 
-                    total_count, 
-                    updated_at as date
-                FROM {self.schema}.summary_report
-                WHERE event_id = :event_id
-                AND updated_at >= :start_date
-                ORDER BY updated_at
-            """
-            
-            historical_data = self.db.execute_query(
-                query, 
-                {"event_id": self.event_id, "start_date": start_date}
-            )
-            
-            # Convert to DataFrame for easier analysis
-            df = pd.DataFrame(historical_data, columns=['ticket_group', 'total_count', 'date'])
-            
-            # If we have data, pivot it to get ticket groups as columns
-            if not df.empty:
-                # Get the latest count for each date and ticket group
-                pivot_df = df.pivot_table(
-                    index='date', 
-                    columns='ticket_group', 
-                    values='total_count',
-                    aggfunc='last'
-                ).reset_index()
-                
-                return pivot_df
-            
-            return pd.DataFrame()
-            
-        except Exception as e:
-            logger.error(f"Error getting historical data: {e}")
-            return pd.DataFrame()
-
 class SlackReporter:
     """Handles reporting to Slack"""
     
-    def __init__(self, channel: str, schema: str):
+    def __init__(self, channel: str, schema: str, region: str):
         load_dotenv()
         self.slack_token = os.getenv("SLACK_API_TOKEN")
         self.slack_channel = channel.replace('#', '')
         self.schema = schema
+        
+        # Define a mapping of regions to icons
+        self.icon_mapping = self.load_icon_mapping()
+
+        # Get the icon based on the schema (which is the region)
+        self.icon = self.icon_mapping.get(region, self.icon_mapping["default"])
         
         if self.slack_token:
             self.slack_client = WebClient(token=self.slack_token)
@@ -346,12 +293,20 @@ class SlackReporter:
         else:
             self.slack_client = None
             logger.warning("Slack token not found. Slack notifications will be disabled.")
+            
+    @staticmethod
+    def load_icon_mapping():
+        try:
+            with open("icons.json", "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {"default": "🎟️"}
     
     def send_report(self, 
                    current_summary: Dict[str, int], 
                    detailed_breakdown: List[Dict[str, Any]], 
-                   growth_data: Dict = None, 
-                   projections: pd.DataFrame = None,
+                   growth_data: Optional[Dict] = None, 
+                   projections: Optional[pd.DataFrame] = None,
                    projection_minutes: int = 3) -> bool:
         """Send a report to Slack with current summary and projections"""
         if not self.slack_client:
@@ -359,13 +314,16 @@ class SlackReporter:
             return False
             
         try:
-            # Create message blocks
+            # Create message blocks with Hong Kong timezone
+            hk_tz = pytz.timezone('Asia/Hong_Kong')
+            current_time_hk = datetime.now(pytz.UTC).astimezone(hk_tz)
+            
             blocks = [
                 {
                     "type": "header",
                     "text": {
                         "type": "plain_text",
-                        "text": f"🎟️ {self.schema} Ticket Analytics Report",
+                        "text": f"{self.icon} {self.schema.upper()} Sales Report",
                         "emoji": True
                     }
                 },
@@ -373,7 +331,7 @@ class SlackReporter:
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*Current Ticket Summary:*\n_Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_"
+                        "text": f"*Current Ticket Summary:*\n_Updated: {current_time_hk.strftime('%Y-%m-%d %H:%M:%S')} HKT"
                     }
                 }
             ]
@@ -384,7 +342,7 @@ class SlackReporter:
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"• *{group}:* {count} tickets"
+                        "text": f"• *{group}:* {count} pax"
                     }
                 })
             
@@ -418,7 +376,7 @@ class SlackReporter:
                 })
             
             # Add growth data if available
-            if growth_data and 'changes' in growth_data:
+            if growth_data and growth_data.get('changes'):
                 blocks.append({"type": "divider"})
                 
                 # Format the time period
@@ -528,7 +486,7 @@ class SlackReporter:
 class TicketAnalytics:
     """Main class that orchestrates the ticket analytics process"""
     
-    def __init__(self, schema: str, event_id: str, projection_minutes: int = 3, history_minutes: int = 30):
+    def __init__(self, schema: str, event_id: str, region: str,projection_minutes: int = 3, history_minutes: int = 15):
         self.schema = schema
         self.event_id = event_id
         self.projection_minutes = projection_minutes
@@ -537,12 +495,12 @@ class TicketAnalytics:
         # Initialize components
         self.db_manager = DatabaseManager(schema)
         self.data_provider = TicketDataProvider(self.db_manager, event_id)
-        self.analyzer = DataAnalyzer(self.db_manager)
+        self.analyzer = DataAnalyzer()
         
         # Load Slack settings
         load_dotenv()
         slack_channel = os.getenv("SLACK_CHANNEL", "events-sentry")
-        self.reporter = SlackReporter(slack_channel, schema)
+        self.reporter = SlackReporter(slack_channel, schema, region)
     
     def run_analysis(self):
         """Run the complete analysis workflow"""
@@ -550,9 +508,6 @@ class TicketAnalytics:
             # Get current summary
             current_summary = self.data_provider.get_current_summary()
             logger.info(f"Current summary: {current_summary}")
-            
-            # Get detailed breakdown
-            detailed_breakdown = self.data_provider.get_detailed_breakdown()
             
             # Get historical data
             historical_df = self.data_provider.get_historical_data(minutes=self.history_minutes)
@@ -573,7 +528,7 @@ class TicketAnalytics:
             # Send to Slack
             success = self.reporter.send_report(
                 current_summary, 
-                detailed_breakdown,
+                self.data_provider.get_detailed_breakdown(),
                 growth_data, 
                 projection_df,
                 self.projection_minutes
@@ -592,7 +547,7 @@ def main():
     
     # Get projection minutes from environment or use default
     projection_minutes = int(os.getenv("PROJECTION_MINUTES", "3"))
-    history_minutes = int(os.getenv("HISTORY_MINUTES", "30"))
+    history_minutes = int(os.getenv("HISTORY_MINUTES", "15"))
     
     # Get event configurations
     configs = []
@@ -602,7 +557,7 @@ def main():
             schema = value
             event_id = os.getenv(f"EVENT_CONFIGS__{region}__event_id")
             if event_id:
-                configs.append({"schema": schema, "event_id": event_id})
+                configs.append({"schema": schema, "event_id": event_id, "region": region})
     
     if not configs:
         logger.error("No valid event configurations found")
@@ -614,6 +569,7 @@ def main():
         analyzer = TicketAnalytics(
             config['schema'], 
             config['event_id'],
+            config['region'],
             projection_minutes=projection_minutes,
             history_minutes=history_minutes
         )
