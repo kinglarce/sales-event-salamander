@@ -75,25 +75,10 @@ class TicketDataProvider:
     def get_current_summary(self) -> Dict[str, int]:
         """Get current summary report data"""
         try:
-            # Get the latest record for each ticket group
-            query = f"""
-                WITH latest_summary AS (
-                    SELECT 
-                        ticket_group,
-                        total_count,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY ticket_group 
-                            ORDER BY created_at DESC
-                        ) as rn
-                    FROM {self.schema}.summary_report
-                    WHERE event_id = :event_id
-                )
-                SELECT ticket_group, total_count
-                FROM latest_summary
-                WHERE rn = 1
-            """
-            
-            results = self.db.execute_query(query, {"event_id": self.event_id})
+            # Read the SQL file
+            with open('sql/get_current_summary.sql', 'r') as file:
+                sql = file.read().format(SCHEMA=self.schema)
+            results = self.db.execute_query(sql, {"event_id": self.event_id})
             return {row[0]: row[1] for row in results}
             
         except Exception as e:
@@ -147,13 +132,8 @@ class TicketDataProvider:
         try:
             # Read the SQL file
             with open('sql/get_detailed_summary_report.sql', 'r') as file:
-                sql_template = file.read()
-            
-            # Replace {SCHEMA} with the actual schema
-            sql_query = sql_template.replace('{SCHEMA}', self.schema)
-            
-            # Execute the query
-            results = self.db.execute_query(sql_query)
+                sql = file.read().format(SCHEMA=self.schema)
+            results = self.db.execute_query(sql)
             return [{"ticket_group": row[0], "total_count": row[1]} for row in results]
             
         except Exception as e:

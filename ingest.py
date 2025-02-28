@@ -89,6 +89,9 @@ def get_db_session(schema: str, skip_fetch: bool = False):
             with engine.connect() as conn:
                 conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
                 
+                if os.getenv('ENABLE_GROWTH_ANALYSIS', 'false').lower() != 'true':
+                    conn.execute(text(f"DROP TABLE IF EXISTS {schema}.summary_report CASCADE;"))
+                
                 # Drop existing tables except summary_report
                 conn.execute(text(f"""
                     DROP TABLE IF EXISTS {schema}.ticket_type_summary CASCADE;
@@ -340,10 +343,7 @@ def get_ticket_summary(session, schema: str, event_id: str) -> Dict[str, Summary
         # Query to get the total counts for each ticket group and collect ticket info
         with open('sql/get_summary_report.sql', 'r') as file:
             sql_template = file.read()
-        
-        # Replace {SCHEMA} with the actual schema and wrap in text()
         query = text(sql_template.replace('{SCHEMA}', schema))
-
         results = session.execute(query, {"event_id": event_id}).fetchall()
         
         # Convert results to a dictionary with additional info
