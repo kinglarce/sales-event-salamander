@@ -22,49 +22,30 @@ logger = logging.getLogger(__name__)
 # Get the absolute path to Python executable
 PYTHON_PATH = sys.executable
 
-def run_ingest():
-    """Run the ingest script and return True if successful"""
+def run_script(script_name: str) -> bool:
+    """Run a Python script and return True if successful"""
     try:
-        logger.info("Starting ingest process...")
+        logger.info(f"Starting {script_name}...")
         # Pass environment variables to the subprocess
         env = os.environ.copy()
         result = subprocess.run(
-            [PYTHON_PATH, 'ingest.py'], 
+            [PYTHON_PATH, script_name], 
             check=True,
             capture_output=True,
             text=True,
             env=env
         )
-        logger.info("Ingest completed successfully")
+        logger.info(f"{script_name} completed successfully")
+        if result.stdout:
+            logger.debug(f"{script_name} output: {result.stdout}")
         return True
     except subprocess.CalledProcessError as e:
-        logger.error(f"Ingest failed with error: {e}")
+        logger.error(f"{script_name} failed with error: {e}")
         logger.error(f"Stdout: {e.stdout}")
         logger.error(f"Stderr: {e.stderr}")
         return False
     except Exception as e:
-        logger.error(f"Unexpected error running ingest: {e}")
-        return False
-
-def run_analytics():
-    """Run the ticket analytics script"""
-    try:
-        logger.info("Starting ticket analytics...")
-        result = subprocess.run(
-            [PYTHON_PATH, 'ticket_analytics.py'],
-            check=True,
-            capture_output=True,
-            text=True
-        )
-        logger.info("Ticket analytics completed successfully")
-        return True
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Ticket analytics failed with error: {e}")
-        logger.error(f"Stdout: {e.stdout}")
-        logger.error(f"Stderr: {e.stderr}")
-        return False
-    except Exception as e:
-        logger.error(f"Unexpected error running analytics: {e}")
+        logger.error(f"Unexpected error running {script_name}: {e}")
         return False
 
 def main():
@@ -75,12 +56,18 @@ def main():
         
         logger.info(f"Using Python at: {PYTHON_PATH}")
         
-        # Run ingest first
-        if run_ingest():
-            # Only run analytics if ingest was successful
-            run_analytics()
-        else:
-            logger.error("Skipping analytics due to ingest failure")
+        # Define the execution order
+        scripts = [
+            'ingest_static_data.py',  # Run static data ingest first
+            'ingest.py',              # Then run main ingest
+            'ticket_analytics.py'      # Finally run analytics
+        ]
+        
+        # Run scripts in sequence, stop if any fails
+        for script in scripts:
+            if not run_script(script):
+                logger.error(f"Stopping execution due to failure in {script}")
+                break
             
     except Exception as e:
         logger.error(f"Error in main orchestration: {e}")

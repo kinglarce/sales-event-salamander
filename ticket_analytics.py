@@ -9,7 +9,7 @@ from models.database import Base
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from dotenv import load_dotenv
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 import pytz
 
 # Configure logging
@@ -275,11 +275,15 @@ class DataAnalyzer:
 class SlackReporter:
     """Handles reporting to Slack"""
     
-    def __init__(self, channel: str, schema: str, region: str):
+    def __init__(self, schema: str, region: str):
         load_dotenv()
-        self.slack_token = os.getenv("SLACK_API_TOKEN")
-        self.slack_channel = channel.replace('#', '')
         self.schema = schema
+        self.db_manager = DatabaseManager(schema)
+        self.slack_token = os.getenv("SLACK_API_TOKEN")
+        self.slack_channel = os.getenv(
+            f"EVENT_CONFIGS__{region}__SLACK_CHANNEL",
+            os.getenv("SLACK_CHANNEL", "events-sales-tracker")
+        )
         
         # Define a mapping of regions to icons
         self.icon_mapping = self.load_icon_mapping()
@@ -290,6 +294,7 @@ class SlackReporter:
         if self.slack_token:
             self.slack_client = WebClient(token=self.slack_token)
             logger.info(f"Slack client initialized with token: {self.slack_token[:5]}...")
+            logger.info(f"Using Slack channel: {self.slack_channel}")
         else:
             self.slack_client = None
             logger.warning("Slack token not found. Slack notifications will be disabled.")
@@ -301,6 +306,53 @@ class SlackReporter:
                 return json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             return {"default": "🎟️"}
+    
+    def get_capacity_configs(self) -> Dict[str, str]:
+        """Get event capacity configurations"""
+        try:
+            with open('sql/get_event_capacity_configs.sql', 'r') as file:
+                sql = file.read().format(SCHEMA=self.schema)
+            result = self.db_manager.execute_query(sql)
+            return {row[0]: row[1] for row in result}
+        except Exception as e:
+            logger.error(f"Error getting capacity configs: {e}")
+            return {}
+    
+    def format_table(self, data: List[Tuple[str, int]], title: str = "") -> str:
+        """Format data into a Slack-friendly table"""
+        if not data:
+            return ""
+        
+        # Find maximum widths
+        group_width = max(len(str(row[0])) for row in data)
+        group_width = max(group_width, len("Ticket Group"))
+        count_width = max(len(str(row[1])) for row in data)
+        count_width = max(count_width, len("No. Pax"))
+        
+        # Create table
+        table = f"{title}\n" if title else ""
+        table += "```\n"
+        table += f"{'Ticket Group':<{group_width}} | {'No. Pax':>10}\n"
+        table += f"{'-' * group_width}-|-{'-' * 10}\n"
+        
+        for group, count in data:
+            # Format group name (replace underscores with spaces and capitalize)
+            formatted_group = ' '.join(word.capitalize() for word in group.split('_'))
+            table += f"{formatted_group:<{group_width}} | {count:>10}\n"
+        
+        table += "```"
+        return table
+    
+    def get_adaptive_summary(self) -> List[Tuple[str, int]]:
+        """Get adaptive ticket summary"""
+        try:
+            with open('sql/get_adaptive_summary.sql', 'r') as file:
+                sql = file.read().format(SCHEMA=self.schema)
+            result = self.db_manager.execute_query(sql)
+            return [(row[0], row[1]) for row in result]
+        except Exception as e:
+            logger.error(f"Error getting adaptive summary: {e}")
+            return []
     
     def send_report(self, 
                    current_summary: Dict[str, int], 
@@ -318,6 +370,9 @@ class SlackReporter:
             hk_tz = pytz.timezone('Asia/Hong_Kong')
             current_time_hk = datetime.now(pytz.UTC).astimezone(hk_tz)
             
+            # Get capacity configs using DatabaseManager
+            configs = self.get_capacity_configs()
+            
             blocks = [
                 {
                     "type": "header",
@@ -331,18 +386,37 @@ class SlackReporter:
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*Current Ticket Summary:*\n_Updated: {current_time_hk.strftime('%Y-%m-%d %H:%M:%S')} HKT"
+                        "text": (
+                            f"*Current Sales Summary:*\n"
+                            f"_Updated: {current_time_hk.strftime('%Y-%m-%d %H:%M:%S')} HKT_\n"
+                            f"*Price Tier:* {configs.get('price_tier', 'N/A')}\n"
+                            f"_(Max Capacity: {configs.get('max_capacity', 'N/A')}, "
+                            f"Start Wave: {configs.get('start_wave', 'N/A')})_"
+                        )
                     }
                 }
             ]
             
-            # Add current summary
-            for group, count in current_summary.items():
+            # Format main summary table
+            summary_data = [(k, v) for k, v in current_summary.items()]
+            summary_table = self.format_table(summary_data)
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": summary_table
+                }
+            })
+            
+            # Add adaptive summary if available
+            adaptive_data = self.get_adaptive_summary()
+            if adaptive_data:
+                adaptive_table = self.format_table(adaptive_data, "\n*Adaptive Group*")
                 blocks.append({
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"• *{group}:* {count} pax"
+                        "text": adaptive_table
                     }
                 })
             
@@ -359,7 +433,7 @@ class SlackReporter:
                 
                 # Create a formatted table
                 table_text = "```\n"
-                table_text += f"{'Ticket Group':<40} | {'Count':>10}\n"
+                table_text += f"{'Ticket Group':<40} | {'No. Pax':>10}\n"
                 table_text += f"{'-'*40} | {'-'*10}\n"
                 
                 for item in detailed_breakdown:
@@ -375,8 +449,8 @@ class SlackReporter:
                     }
                 })
             
-            # Add growth data if available
-            if growth_data and growth_data.get('changes'):
+            # Add growth data if enabled and available
+            if os.getenv('ENABLE_GROWTH_ANALYSIS', 'false').lower() == 'true' and growth_data and growth_data.get('changes'):
                 blocks.append({"type": "divider"})
                 
                 # Format the time period
@@ -415,8 +489,8 @@ class SlackReporter:
                     }
                 })
             
-            # Add projections if available
-            if projections is not None and not projections.empty:
+            # Add projections if enabled and available
+            if os.getenv('ENABLE_PROJECTIONS', 'false').lower() == 'true' and projections is not None and not projections.empty:
                 blocks.append({"type": "divider"})
                 blocks.append({
                     "type": "section",
@@ -498,9 +572,7 @@ class TicketAnalytics:
         self.analyzer = DataAnalyzer()
         
         # Load Slack settings
-        load_dotenv()
-        slack_channel = os.getenv("SLACK_CHANNEL", "events-sentry")
-        self.reporter = SlackReporter(slack_channel, schema, region)
+        self.reporter = SlackReporter(schema, region)
     
     def run_analysis(self):
         """Run the complete analysis workflow"""
