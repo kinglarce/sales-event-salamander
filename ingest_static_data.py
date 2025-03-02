@@ -96,7 +96,7 @@ def get_event_configs() -> Dict[str, Dict[str, str]]:
                 
                 if param == "schema_name":
                     configs[region]["schema_name"] = value
-                elif param in ["max_capacity", "start_wave", "price_tier"]:
+                elif param in ["max_capacity", "start_wave", "price_tier", "price_trigger"]:
                     configs[region]["configs"][param] = value
     
     return configs

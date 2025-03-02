@@ -67,19 +67,33 @@ class DatabaseManager:
 class TicketDataProvider:
     """Provides ticket data from the database"""
     
-    def __init__(self, db_manager: DatabaseManager, event_id: str):
+    def __init__(self, db_manager: DatabaseManager, event_id: str, region: str):
         self.db = db_manager
-        self.event_id = event_id
         self.schema = db_manager.schema
+        self.event_id = event_id
+        self.region = region
+        
+    def get_capacity_configs(self) -> Dict[str, str]:
+        """Get event capacity configurations"""
+        try:
+            with open('sql/get_event_capacity_configs.sql', 'r') as file:
+                sql = file.read().format(SCHEMA=self.schema)
+            result = self.db.execute_query(sql)
+            return {row[0]: row[1] for row in result}
+        except Exception as e:
+            logger.error(f"Error getting capacity configs: {e}")
+            return {}
     
-    def get_current_summary(self) -> Dict[str, int]:
+    def get_current_summary(self, capacity_configs: Dict[str, str]) -> Dict[str, int]:
         """Get current summary report data"""
         try:
             # Read the SQL file
             with open('sql/get_current_summary.sql', 'r') as file:
                 sql = file.read().format(SCHEMA=self.schema)
             results = self.db.execute_query(sql, {"event_id": self.event_id})
-            return {row[0]: row[1] for row in results}
+            summary = {row[0]: row[1] for row in results}
+            summary['Total_excluding_spectators'] = f"{summary['Total_excluding_spectators']} / {capacity_configs.get('price_trigger', 0)}"
+            return summary
             
         except Exception as e:
             logger.error(f"Error getting current summary: {e}")
@@ -130,15 +144,25 @@ class TicketDataProvider:
     def get_detailed_breakdown(self) -> List[Dict[str, Any]]:
         """Get detailed breakdown using the custom SQL query"""
         try:
-            # Read the SQL file
-            with open('sql/get_detailed_summary_report.sql', 'r') as file:
-                sql = file.read().format(SCHEMA=self.schema)
-            results = self.db.execute_query(sql)
-            return [{"ticket_group": row[0], "total_count": row[1]} for row in results]
+            # Determine which SQL file to use
+            sql_summary_detailed_by_day = 'sql/get_detailed_summary_with_day_report.sql'
+            sql_summary = 'sql/get_detailed_summary_report.sql'
+            is_config_breakdown_exist =  os.getenv(f'EVENT_CONFIGS__{self.region}__summary_breakdown_day', 'false').strip().lower() in ('true', '1')
+            sql_file = sql_summary_detailed_by_day if is_config_breakdown_exist else sql_summary
             
+            # Read and format SQL file
+            with open(sql_file, 'r') as file:
+                sql = file.read().format(SCHEMA=self.schema)
+
+            # Execute query
+            results = self.db.execute_query(sql)
+
+            # Process results into a list of dictionaries
+            return [{"ticket_group": row[0], "total_count": row[1]} for row in results]
+
         except Exception as e:
             logger.error(f"Error getting detailed breakdown: {e}")
-            return []
+        return []
 
 class DataAnalyzer:
     """Handles data analysis and projections"""
@@ -287,17 +311,6 @@ class SlackReporter:
         except (FileNotFoundError, json.JSONDecodeError):
             return {"default": "🎟️"}
     
-    def get_capacity_configs(self) -> Dict[str, str]:
-        """Get event capacity configurations"""
-        try:
-            with open('sql/get_event_capacity_configs.sql', 'r') as file:
-                sql = file.read().format(SCHEMA=self.schema)
-            result = self.db_manager.execute_query(sql)
-            return {row[0]: row[1] for row in result}
-        except Exception as e:
-            logger.error(f"Error getting capacity configs: {e}")
-            return {}
-    
     def format_table(self, data: List[Tuple[str, int]], title: str = "") -> str:
         """Format data into a Slack-friendly table"""
         if not data:
@@ -336,7 +349,8 @@ class SlackReporter:
     
     def send_report(self, 
                    current_summary: Dict[str, int], 
-                   detailed_breakdown: List[Dict[str, Any]], 
+                   detailed_breakdown: List[Dict[str, Any]],
+                   capacity_configs: Dict[str, str],
                    growth_data: Optional[Dict] = None, 
                    projections: Optional[pd.DataFrame] = None,
                    projection_minutes: int = 3) -> bool:
@@ -349,9 +363,7 @@ class SlackReporter:
             # Create message blocks with Hong Kong timezone
             hk_tz = pytz.timezone('Asia/Hong_Kong')
             current_time_hk = datetime.now(pytz.UTC).astimezone(hk_tz)
-            
-            # Get capacity configs using DatabaseManager
-            configs = self.get_capacity_configs()
+
             
             blocks = [
                 {
@@ -369,9 +381,9 @@ class SlackReporter:
                         "text": (
                             f"*Current Sales Summary:*\n"
                             f"_Updated: {current_time_hk.strftime('%Y-%m-%d %H:%M:%S')} HKT_\n"
-                            f"*Price Tier:* {configs.get('price_tier', 'N/A')}\n"
-                            f"_(Max Capacity: {configs.get('max_capacity', 'N/A')}, "
-                            f"Start Wave: {configs.get('start_wave', 'N/A')})_"
+                            f"*Price Tier:* {capacity_configs.get('price_tier', 'N/A')}\n"
+                            f"_(Max Capacity: {capacity_configs.get('max_capacity', 'N/A')}, "
+                            f"Start Wave: {capacity_configs.get('start_wave', 'N/A')})_"
                         )
                     }
                 }
@@ -548,7 +560,7 @@ class TicketAnalytics:
         
         # Initialize components
         self.db_manager = DatabaseManager(schema)
-        self.data_provider = TicketDataProvider(self.db_manager, event_id)
+        self.data_provider = TicketDataProvider(self.db_manager, event_id, region)
         self.analyzer = DataAnalyzer()
         
         # Load Slack settings
@@ -557,8 +569,9 @@ class TicketAnalytics:
     def run_analysis(self):
         """Run the complete analysis workflow"""
         try:
+            capacity_configs = self.data_provider.get_capacity_configs()
             # Get current summary
-            current_summary = self.data_provider.get_current_summary()
+            current_summary = self.data_provider.get_current_summary(capacity_configs)
             logger.info(f"Current summary: {current_summary}")
             
             # Get historical data
@@ -581,6 +594,7 @@ class TicketAnalytics:
             success = self.reporter.send_report(
                 current_summary, 
                 self.data_provider.get_detailed_breakdown(),
+                capacity_configs,
                 growth_data, 
                 projection_df,
                 self.projection_minutes
