@@ -2,6 +2,23 @@
 
 A robust data pipeline for fetching and processing Vivenu event and ticket data, built with Python, PostgreSQL, and Docker.
 
+## Project Structure
+```
+vivenu-pipeline/
+├── models/
+│   └── database.py      # SQLAlchemy models
+├── sql/
+│   ├── get_current_summary.sql
+│   └── get_ticket_counts.sql
+├── .env.example
+├── Dockerfile
+├── Dockerfile.cron
+├── docker-compose.yml
+├── ingest.py            # Main ingestion script
+├── requirements.txt
+└── ticket_analytics.py  # Analytics processing
+```
+
 ## Features
 
 - Asynchronous API data fetching with rate limiting
@@ -14,7 +31,6 @@ A robust data pipeline for fetching and processing Vivenu event and ticket data,
 - Environment-based configuration
 - Database visualization with pgweb
 - Automated data ingestion via cron jobs
-- Real-time Slack notifications
 
 ## Prerequisites
 
@@ -35,12 +51,13 @@ POSTGRES_PORT=5432
 POSTGRES_DB=vivenu_db
 
 # Slack config
-SLACK_API_TOKEN=xoxb-your-slack-token
-SLACK_CHANNEL=your-channel-name
+SLACK_API_TOKEN=xoxb-XXXX
 
 # Ticket analytics config
 PROJECTION_MINUTES=3
 HISTORY_MINUTES=15
+ENABLE_GROWTH_ANALYSIS=false
+ENABLE_PROJECTIONS=false
 
 # API config
 EVENT_API_BASE_URL=https://vivenu.com/api
@@ -49,10 +66,18 @@ EVENT_API_BASE_URL=https://vivenu.com/api
 EVENT_CONFIGS__region1__token=your_api_token_1
 EVENT_CONFIGS__region1__event_id=your_event_id_1
 EVENT_CONFIGS__region1__schema_name=region1
+EVENT_CONFIGS__region1__max_capacity=5000
+EVENT_CONFIGS__region1__start_wave=50
+EVENT_CONFIGS__region1__price_tier=L1
+EVENT_CONFIGS__region1__SLACK_CHANNEL=region1-channel
 
 EVENT_CONFIGS__region2__token=your_api_token_2
 EVENT_CONFIGS__region2__event_id=your_event_id_2
 EVENT_CONFIGS__region2__schema_name=region2
+EVENT_CONFIGS__region2__max_capacity=4000
+EVENT_CONFIGS__region2__start_wave=40
+EVENT_CONFIGS__region2__price_tier=L2
+EVENT_CONFIGS__region2__SLACK_CHANNEL=region2-channel
 ```
 
 ## Installation & Usage
@@ -69,6 +94,7 @@ docker-compose up --build
 docker-compose up -d
 ```
 
+
 3. View logs:
 ```bash
 # View all container logs
@@ -83,6 +109,15 @@ docker-compose logs -f cron
 ```bash
 docker-compose down
 ```
+### Automatic Ingestion, Ticket Analytics and Slack Notification
+```bash
+# Re-build app for Environment changes
+docker-compose up --build -d app
+
+# Run
+docker exec -it vivenu-app python scripts/run_analytics.py
+```
+
 
 ### Manual Data Ingestion
 
@@ -129,36 +164,40 @@ docker-compose up -d --build cron
 The pipeline creates the following tables for each configured region:
 
 1. `events` - Stores event information
+   - id (PK)
+   - name
+   - location_name
+   - start_date
+   - end_date
+   - timezone
+
 2. `tickets` - Stores ticket information
+   - id (PK)
+   - event_id (FK)
+   - ticket_type_id
+   - status
+   - created_at
+   - customer_info
+
 3. `ticket_type_summary` - Summarizes ticket counts by type
+   - id (PK)
+   - event_id (FK)
+   - ticket_type_id
+   - total_count
+   - updated_at
+
 4. `summary_report` - Stores historical ticket count data
+   - id (PK)
+   - event_id
+   - ticket_group
+   - total_count
+   - created_at
 
 ## Accessing pgweb
 
 Once the containers are running, access the pgweb interface at:
 ```
 http://localhost:8081
-```
-
-pgweb provides:
-- Database table browsing
-- SQL query execution
-- Data export
-- Table relationship visualization
-- Database statistics monitoring
-
-## Slack Notifications
-
-The pipeline sends automated reports to Slack including:
-- Current ticket counts
-- Detailed breakdowns by ticket type
-- Growth analysis
-- Sales projections
-
-Configure Slack notifications in `.env`:
-```env
-SLACK_API_TOKEN=your-token
-SLACK_CHANNEL=your-channel
 ```
 
 ## Troubleshooting
