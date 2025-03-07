@@ -4,6 +4,9 @@ import logging
 from datetime import datetime
 from sqlalchemy import create_engine, text
 from typing import Dict, List
+import json
+import glob
+from pathlib import Path
 
 # Create logs directory if it doesn't exist
 if not os.path.exists('logs'):
@@ -101,8 +104,50 @@ def get_event_configs() -> Dict[str, Dict[str, str]]:
     
     return configs
 
-def main():
-    load_dotenv()
+def load_json_config(file_path: str) -> Dict:
+    """Load configuration from JSON file"""
+    try:
+        with open(file_path, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading JSON file {file_path}: {e}")
+        return {}
+
+def setup_ticket_capacity_table(engine, schema: str):
+    """Create ticket capacity table if it doesn't exist"""
+    try:
+        with engine.connect() as conn:
+            setup_sql = read_sql_file('setup_ticket_capacity_configs.sql')
+            formatted_sql = setup_sql.format(schema=schema)
+            conn.execute(text(formatted_sql))
+            conn.commit()
+            logger.info(f"Successfully set up ticket capacity table for {schema}")
+    except Exception as e:
+        logger.error(f"Error setting up ticket capacity table for {schema}: {e}")
+        raise
+
+def upsert_ticket_capacity(engine, schema: str, group: str, event_day: str, capacity: int):
+    """Insert or update ticket capacity"""
+    try:
+        with engine.connect() as conn:
+            upsert_sql = read_sql_file('upsert_ticket_capacity_config.sql')
+            formatted_sql = upsert_sql.format(schema=schema)
+            conn.execute(
+                text(formatted_sql),
+                {
+                    "ticket_group": group,
+                    "event_day": event_day,
+                    "capacity": capacity
+                }
+            )
+            conn.commit()
+            logger.info(f"Updated capacity for {group} on {event_day}={capacity} in schema {schema}")
+    except Exception as e:
+        logger.error(f"Error upserting ticket capacity for schema {schema}: {e}")
+        raise
+
+def process_env_configs():
+    """Process all environment configurations"""
     engine = get_db_engine()
     
     # Get configurations from environment
@@ -127,6 +172,48 @@ def main():
         except Exception as e:
             logger.error(f"Error processing region {region}: {e}")
             continue
+
+def process_json_configs():
+    """Process all JSON configuration files"""
+    engine = get_db_engine()
+    
+    json_files = glob.glob('data_static/schemas/*.json')
+    
+    for json_file in json_files:
+        schema_name = Path(json_file).stem
+        config = load_json_config(json_file)
+        
+        if not config.get('ticket_capacities'):
+            logger.warning(f"No ticket capacities found in {json_file}")
+            continue
+            
+        try:
+            setup_schema_and_table(engine, schema_name)
+            setup_ticket_capacity_table(engine, schema_name)
+            
+            # Process combined capacities
+            if 'all' in config['ticket_capacities']:
+                for group, capacity in config['ticket_capacities']['all'].items():
+                    upsert_ticket_capacity(engine, schema_name, group, 'ALL', capacity)
+            
+            # Process day-specific capacities if they exist
+            if 'by_day' in config['ticket_capacities']:
+                for day, categories in config['ticket_capacities']['by_day'].items():
+                    for group, capacity in categories.items():
+                        upsert_ticket_capacity(engine, schema_name, group, day, capacity)
+                
+            logger.info(f"Successfully processed ticket capacities for schema {schema_name}")
+            
+        except Exception as e:
+            logger.error(f"Error processing schema {schema_name}: {e}")
+            continue
+
+def main():
+    load_dotenv()
+    
+    # Process both ENV configs and JSON configs
+    process_env_configs()  # Your existing ENV processing
+    process_json_configs()  # New JSON processing
 
 if __name__ == "__main__":
     main() 

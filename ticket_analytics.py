@@ -48,18 +48,6 @@ class DatabaseManager:
             logger.error(f"Database query error: {e}")
             return []
     
-    def check_table_exists(self, table_name: str) -> bool:
-        """Check if a table exists in the schema"""
-        query = f"""
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables 
-                WHERE table_schema = '{self.schema}' 
-                AND table_name = '{table_name}'
-            )
-        """
-        result = self.execute_query(query)
-        return result[0][0] if result else False
-    
     def close(self):
         """Close the database session"""
         self.session.close()
@@ -92,7 +80,7 @@ class TicketDataProvider:
                 sql = file.read().format(SCHEMA=self.schema)
             results = self.db.execute_query(sql, {"event_id": self.event_id})
             summary = {row[0]: row[1] for row in results}
-            summary['Total_excluding_spectators'] = f"{summary['Total_excluding_spectators']} / {capacity_configs.get('price_trigger', 0)}"
+            summary['Total_athletes'] = f"{summary['Total_athletes']} / {capacity_configs.get('price_trigger', 0)}"
             return summary
             
         except Exception as e:
@@ -158,7 +146,11 @@ class TicketDataProvider:
             results = self.db.execute_query(sql)
 
             # Process results into a list of dictionaries
-            return [{"ticket_group": row[0], "total_count": row[1]} for row in results]
+            return [{
+                "ticket_group": row[0], 
+                "total": row[3],
+                "percentage": f"{row[4]}%" if row[4] is not None else ""
+            } for row in results]
 
         except Exception as e:
             logger.error(f"Error getting detailed breakdown: {e}")
@@ -364,7 +356,6 @@ class SlackReporter:
             hk_tz = pytz.timezone('Asia/Hong_Kong')
             current_time_hk = datetime.now(pytz.UTC).astimezone(hk_tz)
 
-            
             blocks = [
                 {
                     "type": "header",
@@ -425,11 +416,11 @@ class SlackReporter:
                 
                 # Create a formatted table
                 table_text = "```\n"
-                table_text += f"{'Ticket Group':<40} | {'No. Pax':>10}\n"
-                table_text += f"{'-'*40} | {'-'*10}\n"
+                table_text += f"{'Ticket Group':<40} | {'No. Pax':>10} | {'%':>10}\n"
+                table_text += f"{'-'*40} | {'-'*10} | {'-'*10}\n"
                 
                 for item in detailed_breakdown:
-                    table_text += f"{item['ticket_group']:<40} | {item['total_count']:>10}\n"
+                    table_text += f"{item['ticket_group']:<40} | {item['total']:>10} | {item['percentage']:>10}\n"
                 
                 table_text += "```"
                 

@@ -1,0 +1,51 @@
+{
+    "ticket_capacities": {
+        "all": {
+            "HYROX DOUBLES MEN": 640,
+            "HYROX DOUBLES MIXED": 640,
+            "HYROX DOUBLES WOMEN": 560,
+            "HYROX MENS RELAY": 240,
+            "HYROX MEN with Adaptive": 735,
+            "HYROX MIXED RELAY": 480,
+            "HYROX PRO DOUBLES MEN": 80,
+            "HYROX PRO DOUBLES WOMEN": 80,
+            "HYROX PRO MEN": 147,
+            "HYROX PRO WOMEN": 98,
+            "HYROX WOMENS RELAY": 240,
+            "HYROX WOMEN with Adaptive": 343
+        },
+        "by_day": {
+            "SATURDAY": {
+                "HYROX DOUBLES MEN": 320,
+                "HYROX DOUBLES MIXED": 320,
+                "HYROX DOUBLES WOMEN": 280,
+                "HYROX MENS RELAY": 120,
+                "HYROX MEN with Adaptive": 367,
+                "HYROX MIXED RELAY": 240,
+                "HYROX PRO DOUBLES MEN": 40,
+                "HYROX PRO DOUBLES WOMEN": 40,
+                "HYROX PRO MEN": 73,
+                "HYROX PRO WOMEN": 49,
+                "HYROX WOMENS RELAY": 120,
+                "HYROX WOMEN with Adaptive": 171,
+                "HYROX MENS CORPORATE RELAY": 300,
+                "HYROX MIXED CORPORATE RELAY": 300,
+                "HYROX WOMENS CORPORATE RELAY": 300
+            },
+            "SUNDAY": {
+                "HYROX DOUBLES MEN": 320,
+                "HYROX DOUBLES MIXED": 320,
+                "HYROX DOUBLES WOMEN": 280,
+                "HYROX MENS RELAY": 120,
+                "HYROX MEN with Adaptive": 368,
+                "HYROX MIXED RELAY": 240,
+                "HYROX PRO DOUBLES MEN": 40,
+                "HYROX PRO DOUBLES WOMEN": 40,
+                "HYROX PRO MEN": 74,
+                "HYROX PRO WOMEN": 49,
+                "HYROX WOMENS RELAY": 120,
+                "HYROX WOMEN with Adaptive": 172
+            }
+        }
+    }
+} 

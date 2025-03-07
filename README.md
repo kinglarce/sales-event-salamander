@@ -7,6 +7,9 @@ A robust data pipeline for fetching and processing Vivenu event and ticket data,
 vivenu-pipeline/
 ├── models/
 │   └── database.py      # SQLAlchemy models
+├── data_static/ 
+│   └── schemas/         # SQL schema for static data
+│       └── region1.json
 ├── sql/
 │   ├── get_current_summary.sql
 │   └── get_ticket_counts.sql
@@ -31,6 +34,8 @@ vivenu-pipeline/
 - Environment-based configuration
 - Database visualization with pgweb
 - Automated data ingestion via cron jobs
+- Slack notification for ticket sales report
+- Static data for event capacity and ticket capacity
 
 ## Prerequisites
 

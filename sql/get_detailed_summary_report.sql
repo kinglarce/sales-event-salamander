@@ -4,6 +4,7 @@ WITH ticket_data AS (
         ticket_category,
         total_count
     FROM {SCHEMA}.ticket_type_summary
+    WHERE ticket_category <> 'extra'
 ),
 
 -- Corporate Relay Data
@@ -51,38 +52,56 @@ single_double_data AS (
             WHEN ticket_name LIKE '%hyrox doubles men%' THEN 'HYROX DOUBLES MEN'
             WHEN ticket_name LIKE '%hyrox doubles mixed%' THEN 'HYROX DOUBLES MIXED'
 
-            -- Spectators and Extras
+            -- Spectators
             WHEN ticket_category = 'spectator' THEN 'Spectator'
-            WHEN ticket_category = 'extra' THEN 'Extras'
             ELSE NULL
         END AS ticket_group,
         total_count
     FROM ticket_data
     WHERE ticket_name LIKE 'hyrox%'
-       OR ticket_category IN ('spectator', 'extra')
+       OR ticket_category = 'spectator'
 )
 
--- Aggregating results
-SELECT category, SUM(total) AS total
+-- Final aggregation with capacity information
+SELECT 
+    summary.category,
+    summary.total,
+    tc.capacity,
+    CASE 
+        WHEN tc.capacity IS NOT NULL 
+        THEN CONCAT(summary.total, ' / ', tc.capacity)
+        ELSE CAST(summary.total AS TEXT)
+    END AS formatted_total,
+    CASE 
+        WHEN tc.capacity IS NOT NULL AND tc.capacity > 0
+        THEN ROUND((summary.total::float / tc.capacity::float * 100)::numeric, 1)
+        ELSE NULL
+    END AS percentage_total
 FROM (
-    SELECT ticket_group AS category, SUM(total_count) AS total
-    FROM single_double_data
-    WHERE ticket_group IS NOT NULL
-    GROUP BY ticket_group
+    SELECT category, SUM(total) AS total
+    FROM (
+        SELECT ticket_group AS category, SUM(total_count) AS total
+        FROM single_double_data
+        WHERE ticket_group IS NOT NULL
+        GROUP BY ticket_group
 
-    UNION ALL
+        UNION ALL
 
-    SELECT corporate_type AS category, SUM(total_count) AS total
-    FROM corporate_data
-    WHERE corporate_type IS NOT NULL
-    GROUP BY corporate_type
+        SELECT corporate_type AS category, SUM(total_count) AS total
+        FROM corporate_data
+        WHERE corporate_type IS NOT NULL
+        GROUP BY corporate_type
 
-    UNION ALL
+        UNION ALL
 
-    SELECT relay_type AS category, SUM(total_count) AS total
-    FROM relay_data
-    WHERE relay_type IS NOT NULL
-    GROUP BY relay_type
-) aggregated
-GROUP BY category
+        SELECT relay_type AS category, SUM(total_count) AS total
+        FROM relay_data
+        WHERE relay_type IS NOT NULL
+        GROUP BY relay_type
+    ) aggregated
+    GROUP BY category
+) summary
+LEFT JOIN {SCHEMA}.ticket_capacity_configs tc 
+    ON tc.ticket_group = summary.category 
+    AND tc.event_day = 'ALL'
 ORDER BY category;

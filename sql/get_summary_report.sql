@@ -11,7 +11,9 @@ WITH group_summary AS (
         array_agg(ticket_name) as ticket_names,
         SUM(total_count) as total_count
     FROM {SCHEMA}.ticket_type_summary
-    WHERE event_id = :event_id
+    WHERE 
+        event_id = :event_id
+        AND ticket_category <> 'extra'
     GROUP BY 
         CASE 
             WHEN ticket_category = 'single' THEN 'All_singles'
@@ -29,7 +31,7 @@ SELECT
 FROM group_summary
 UNION ALL
 SELECT 
-    'Total_excluding_spectators' as ticket_group,
+    'Total_athletes' as ticket_group,
     array_agg(ticket_type_id) as ticket_type_ids,
     array_agg(ticket_name) as ticket_names,
     SUM(total_count) as total_count
