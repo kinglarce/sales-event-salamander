@@ -85,7 +85,7 @@ SELECT
     END AS formatted_total,
     CASE 
         WHEN tc.capacity IS NOT NULL AND tc.capacity > 0
-        THEN ROUND((summary.total::float / tc.capacity::float * 100)::numeric, 1)
+        THEN ROUND((summary.total::float / tc.capacity::float * 100)::numeric, 2)
         ELSE NULL
     END AS percentage_total
 FROM (
@@ -118,4 +118,4 @@ FROM (
 LEFT JOIN {SCHEMA}.ticket_capacity_configs tc 
     ON tc.ticket_group = summary.category 
     AND tc.event_day = summary.ticket_event_day
-ORDER BY category;
+ORDER BY tc.id;
