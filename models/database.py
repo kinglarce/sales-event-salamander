@@ -31,7 +31,6 @@ class Ticket(Base):
     
     id = Column(String, primary_key=True)
     region_schema = Column(String, nullable=False)
-    name = Column(String)
     transaction_id = Column(String)
     ticket_type_id = Column(String)
     currency = Column(String)
@@ -39,7 +38,6 @@ class Ticket(Base):
     personalized = Column(Boolean)
     expired = Column(Boolean)
     event_id = Column(String, ForeignKey("events.id"))
-    seller_id = Column(String)
     ticket_name = Column(String)
     category_name = Column(String)
     barcode = Column(String, unique=True)
@@ -48,10 +46,6 @@ class Ticket(Base):
     city = Column(String)
     country = Column(String)
     customer_id = Column(String)
-    email = Column(String)
-    firstname = Column(String)
-    lastname = Column(String)
-    postal = Column(String)
 
 class TicketTypeSummary(Base):
     __tablename__ = "ticket_type_summary"

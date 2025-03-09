@@ -240,7 +240,6 @@ def process_ticket_data(session, ticket_data, event_data, schema):
         ticket = Ticket(
             id=ticket_data.get("_id"),
             region_schema=schema,
-            name=ticket_name,
             transaction_id=ticket_data.get("transactionId"),
             ticket_type_id=ticket_data.get("ticketTypeId"),
             currency=ticket_data.get("currency"),
@@ -248,7 +247,6 @@ def process_ticket_data(session, ticket_data, event_data, schema):
             personalized=ticket_data.get("personalized", False),
             expired=ticket_data.get("expired", False),
             event_id=ticket_data.get("eventId"),
-            seller_id=ticket_data.get("sellerId"),
             ticket_name=ticket_data.get("ticketName"),
             category_name=ticket_data.get("categoryName"),
             barcode=ticket_data.get("barcode"),
@@ -256,11 +254,7 @@ def process_ticket_data(session, ticket_data, event_data, schema):
             updated_at=ticket_data.get("updatedAt"),
             city=ticket_data.get("city"),
             country=ticket_data.get("country"),
-            customer_id=ticket_data.get("customerId"),
-            email=ticket_data.get("email"),
-            firstname=ticket_data.get("firstname"),
-            lastname=ticket_data.get("lastname"),
-            postal=ticket_data.get("postal")
+            customer_id=ticket_data.get("customerId")
         )
 
         session.add(ticket)
