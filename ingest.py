@@ -18,14 +18,9 @@ from dotenv import load_dotenv
 if not os.path.exists('logs'):
     os.makedirs('logs')
 
-# Set up logging to both file and console
+# Set up logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
-
-# Create file handler with timestamp in filename
-current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
-file_handler = logging.FileHandler(f'logs/ingest_{current_time}.log')
-file_handler.setLevel(logging.DEBUG)
 
 # Create console handler
 console_handler = logging.StreamHandler()
@@ -33,12 +28,18 @@ console_handler.setLevel(logging.INFO)
 
 # Create formatter and add it to the handlers
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-file_handler.setFormatter(formatter)
 console_handler.setFormatter(formatter)
 
-# Add the handlers to the logger
-logger.addHandler(file_handler)
+# Add the console handler to the logger
 logger.addHandler(console_handler)
+
+# Check if file logging is enabled
+if os.getenv('ENABLE_FILE_LOGGING', 'true').strip().lower() in ('true', '1'):
+    log_filename = f'logs/ingest_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+    file_handler = logging.FileHandler(log_filename)
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
 
 class TicketCategory(Enum):
     SINGLE = "single"
@@ -177,7 +178,7 @@ def verify_tables(session, schema: str):
 def determine_ticket_group(ticket_name: str) -> TicketCategory:
     """Determine basic ticket group (single, double, relay, spectator, extra)"""
     name_lower = ticket_name.lower()
-    if 'friend' in name_lower or 'sportograf' in name_lower or 'transfer' in name_lower:
+    if 'friend' in name_lower or 'sportograf' in name_lower or 'transfer' in name_lower or 'complimentary' in name_lower:
         return TicketCategory.EXTRA 
     elif 'double' in name_lower:
         return TicketCategory.DOUBLES

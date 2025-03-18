@@ -14,25 +14,26 @@ if not os.path.exists('logs'):
 
 # Set up logging
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-
-# Create file handler with timestamp in filename
-current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
-file_handler = logging.FileHandler(f'logs/ingest_static_{current_time}.log')
-file_handler.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 
 # Create console handler
 console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.INFO)
 
-# Create formatter
+# Create formatter and add it to the handlers
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-file_handler.setFormatter(formatter)
 console_handler.setFormatter(formatter)
 
-# Add handlers
-logger.addHandler(file_handler)
+# Add the console handler to the logger
 logger.addHandler(console_handler)
+
+# Check if file logging is enabled
+if os.getenv('ENABLE_FILE_LOGGING', 'true').strip().lower() in ('true', '1'):
+    log_filename = f'logs/ingest_static_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+    file_handler = logging.FileHandler(log_filename)
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
 
 def read_sql_file(filename: str) -> str:
     """Read SQL file contents"""

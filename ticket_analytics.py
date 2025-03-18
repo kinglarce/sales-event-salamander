@@ -17,10 +17,17 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(f'logs/ticket_analytics_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
-        logging.StreamHandler()
+        logging.StreamHandler()  # Always log to console
     ]
 )
+
+# Check if file logging is enabled
+if os.getenv('ENABLE_FILE_LOGGING', 'true').strip().lower() in ('true', '1'):
+    log_filename = f'logs/ticket_analytics_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+    file_handler = logging.FileHandler(log_filename)
+    file_handler.setLevel(logging.INFO)
+    logging.getLogger().addHandler(file_handler)
+
 logger = logging.getLogger(__name__)
 
 class DatabaseManager:
@@ -87,7 +94,7 @@ class TicketDataProvider:
             logger.error(f"Error getting current summary: {e}")
             return {}
     
-    def get_historical_data(self, minutes: int = 15) -> pd.DataFrame:
+    def get_historical_data(self, minutes: int = 3) -> pd.DataFrame:
         """Get historical summary report data from the last N minutes"""
         time_threshold = datetime.now() - timedelta(minutes=minutes)
         
@@ -450,17 +457,18 @@ class SlackReporter:
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*Growth Analysis (Last {period_text}):*"
+                        "text": f"*Growth Analysis (Last {projection_minutes}):*"
                     }
                 })
                 
                 # Create a formatted table for growth
                 table_text = "```\n"
-                table_text += f"{'Ticket Group':<30} | {'Start':>8} | {'Current':>8} | {'Change':>8} | {'Growth %':>8}\n"
+                table_text += f"{'Ticket Group':<30} | {'Previous':>8} | {'Current':>8} | {'Change':>8} | {'Growth %':>8}\n"
                 table_text += f"{'-'*30} | {'-'*8} | {'-'*8} | {'-'*8} | {'-'*8}\n"
                 
                 for group, data in growth_data['changes'].items():
-                    table_text += f"{group:<30} | {data['first_value']:>8.0f} | {data['last_value']:>8.0f} | {data['absolute_change']:>8.0f} | {data['percent_change']:>7.1f}%\n"
+                    formatted_group = ' '.join(word.capitalize() for word in group.split('_'))
+                    table_text += f"{formatted_group:<30} | {data['first_value']:>8.0f} | {data['last_value']:>8.0f} | {data['absolute_change']:>8.0f} | {data['percent_change']:>7.1f}%\n"
                 
                 table_text += "```"
                 
@@ -543,7 +551,7 @@ class SlackReporter:
 class TicketAnalytics:
     """Main class that orchestrates the ticket analytics process"""
     
-    def __init__(self, schema: str, event_id: str, region: str,projection_minutes: int = 3, history_minutes: int = 15):
+    def __init__(self, schema: str, event_id: str, region: str,projection_minutes: int = 3, history_minutes: int = 3):
         self.schema = schema
         self.event_id = event_id
         self.projection_minutes = projection_minutes
@@ -604,7 +612,7 @@ def main():
     
     # Get projection minutes from environment or use default
     projection_minutes = int(os.getenv("PROJECTION_MINUTES", "3"))
-    history_minutes = int(os.getenv("HISTORY_MINUTES", "15"))
+    history_minutes = int(os.getenv("HISTORY_MINUTES", "3"))
     
     # Get event configurations
     configs = []
