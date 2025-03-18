@@ -1,4 +1,4 @@
-# Vivenu Data Pipeline
+# Vivenu Sales Data Pipeline
 
 A robust data pipeline for fetching and processing Vivenu event and ticket data, built with Python, PostgreSQL, and Docker.
 
