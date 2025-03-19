@@ -7,3 +7,4 @@ numpy==1.26.2
 slack_sdk==3.26.0
 pytz==2023.3
 slack-bolt==1.18.0
+xlsxwriter>=3.0.0
