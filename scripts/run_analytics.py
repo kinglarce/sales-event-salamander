@@ -75,7 +75,8 @@ def main():
         # Define the execution order
         scripts = [
             'ingest_static_data.py',  # Run static data ingest first
-            'ingest.py',              # Then run main ingest
+            'ingest.py',              # Run main ingest
+            'ingest_age_groups.py',   # Run age group ingest
             'ticket_analytics.py'      # Finally run analytics
         ]
         
