@@ -211,6 +211,23 @@ class LogConfig:
         else:
             logger.setLevel(logging.INFO)
 
+def calculate_age(birth_date) -> int | None:
+    if birth_date:
+        birth_date = datetime.strptime(birth_date, "%Y-%m-%d")
+        today = datetime.today()
+        return today.year - birth_date.year - ((today.month, today.day) < (birth_date.month, birth_date.day))
+    return None
+
+def standardize_gender(gender: str) -> str | None:
+    """Standardize gender input to 'Male' or 'Female'."""
+    if gender:
+        gender_lower = gender.lower()
+        if gender_lower in ['male', 'men']:
+            return 'Male'
+        elif gender_lower in ['female', 'woman', 'women']:
+            return 'Female'
+    return None
+
 def process_ticket_data(session, ticket_data, event_data, schema):
     """Process ticket data and store in database"""
     try:
@@ -255,7 +272,10 @@ def process_ticket_data(session, ticket_data, event_data, schema):
             updated_at=ticket_data.get("updatedAt"),
             city=ticket_data.get("city"),
             country=ticket_data.get("country"),
-            customer_id=ticket_data.get("customerId")
+            customer_id=ticket_data.get("customerId"),
+            gender=standardize_gender(ticket_data.get("extraFields", {}).get("gender")),
+            birthday=ticket_data.get("extraFields", {}).get("birth_date"),
+            age=calculate_age(ticket_data.get("extraFields", {}).get("birth_date"))
         )
 
         session.add(ticket)

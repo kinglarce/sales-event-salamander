@@ -46,6 +46,9 @@ class Ticket(Base):
     city = Column(String)
     country = Column(String)
     customer_id = Column(String)
+    gender = Column(String)
+    birthday = Column(String)
+    age = Column(Integer)
 
 class TicketTypeSummary(Base):
     __tablename__ = "ticket_type_summary"
