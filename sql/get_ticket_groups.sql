@@ -65,7 +65,13 @@ relay_data AS (
     WHERE base_name LIKE '%relay%'
 )
 
-SELECT ticket_group
+SELECT 
+    ticket_group,
+    CASE
+        WHEN ticket_group LIKE '%DOUBLES%' THEN 'double'
+        WHEN ticket_group LIKE '%RELAY%' THEN 'relay'
+        ELSE 'single'
+    END as category
 FROM (
     SELECT ticket_group, 
         CASE 

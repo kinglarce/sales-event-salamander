@@ -11,8 +11,10 @@ WITH ticket_data AS (
     JOIN {SCHEMA}.ticket_type_summary ts 
         ON t.ticket_type_id = ts.ticket_type_id
     WHERE ts.ticket_category NOT IN ('spectator', 'extra')
-    AND t.age >= :min_age 
-    AND t.age <= :max_age
+    AND (
+        (:is_incomplete AND t.age IS NULL) OR
+        (NOT :is_incomplete AND t.age IS NOT NULL AND t.age >= :min_age AND t.age <= :max_age)
+    )
 ),
 
 -- Corporate Relay Data

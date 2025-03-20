@@ -3,7 +3,7 @@ import logging
 from datetime import datetime
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 from pathlib import Path
 
 # Create logs directory if it doesn't exist
@@ -65,69 +65,87 @@ class AgeGroupIngester:
             logger.error(f"Error setting up age groups table for {self.schema}: {e}")
             raise
     
-    def get_age_ranges(self) -> List[Tuple[str, int, int]]:
-        """Get list of age group ranges"""
-        return [
-            ("U24", 0, 24),
-            ("25-29", 25, 29),
-            ("30-34", 30, 34),
-            ("35-39", 35, 39),
-            ("40-44", 40, 44),
-            ("45-49", 45, 49),
-            ("50-54", 50, 54),
-            ("55-59", 55, 59),
-            ("60-64", 60, 64),
-            ("65-69", 65, 69),
-            ("70+", 70, 999)
-        ]
+    def get_age_ranges(self, category: str) -> List[Tuple[str, Optional[int], Optional[int]]]:
+        """Get list of age group ranges based on ticket category"""
+        if category == "double":
+            return [
+                ("U29", 0, 29),
+                ("30-39", 30, 39),
+                ("40-49", 40, 49),
+                ("50-59", 50, 59),
+                ("60-69", 60, 69),
+                ("70+", 70, 999),
+                ("Incomplete", None, None)
+            ]
+        elif category == "relay":
+            return [
+                ("U40", 0, 39),
+                ("40+", 40, 999),
+                ("Incomplete", None, None)
+            ]
+        else:  # single or default
+            return [
+                ("U24", 0, 24),
+                ("25-29", 25, 29),
+                ("30-34", 30, 34),
+                ("35-39", 35, 39),
+                ("40-44", 40, 44),
+                ("45-49", 45, 49),
+                ("50-54", 50, 54),
+                ("55-59", 55, 59),
+                ("60-64", 60, 64),
+                ("65-69", 65, 69),
+                ("70+", 70, 999),
+                ("Incomplete", None, None)
+            ]
 
     def process_age_groups(self):
         """Process age groups for all ticket types"""
         try:
-            # Get SQL queries
             groups_sql = self._read_sql_file('get_ticket_groups.sql')
             count_sql = self._read_sql_file('get_age_group_count.sql')
             upsert_sql = self._read_sql_file('upsert_ticket_age_group.sql')
             
             with self.engine.connect() as conn:
-                # Get ticket groups with their event days
+                # Get ticket groups with their categories
                 ticket_groups_result = conn.execute(text(groups_sql))
-                print('hey : ', ticket_groups_result)
-                ticket_groups_with_days = [row[0] for row in ticket_groups_result]
-                print('what is this : ', ticket_groups_with_days)
-                # Prepare batch of updates
+                ticket_groups = [(row[0], row[1]) for row in ticket_groups_result]  # (group, category)
+                
                 updates = []
-                for group in ticket_groups_with_days:
-                    total_count = 0
+                for group, category in ticket_groups:
+                    group_total = 0  # Initialize total for each group
+                    
+                    # Get appropriate age ranges for this category
+                    age_ranges = self.get_age_ranges(category.lower())
                     
                     # Process each age range
-                    for range_name, min_age, max_age in self.get_age_ranges():
-                        count = conn.execute(
-                            text(count_sql),
-                            {
-                                "ticket_group": group,
-                                "min_age": min_age,
-                                "max_age": max_age
-                            }
-                        ).scalar()
+                    for range_name, min_age, max_age in age_ranges:
+                        params = {
+                            "ticket_group": group,
+                            "min_age": min_age,
+                            "max_age": max_age,
+                            "is_incomplete": range_name == "Incomplete"
+                        }
+                        
+                        count = conn.execute(text(count_sql), params).scalar()
                         
                         if count > 0:
-                            total_count += count
+                            group_total += count
                             updates.append({
                                 "ticket_group": group,
                                 "age_range": range_name,
                                 "count": count
                             })
                     
-                    # Add total if there were any counts
-                    if total_count > 0:
+                    # Add total for this group if there were any counts
+                    if group_total > 0:
                         updates.append({
                             "ticket_group": group,
                             "age_range": "Total",
-                            "count": total_count
+                            "count": group_total
                         })
                 
-                # Execute all updates in a single transaction
+                # Execute all updates
                 if updates:
                     for update in updates:
                         conn.execute(text(upsert_sql), update)
