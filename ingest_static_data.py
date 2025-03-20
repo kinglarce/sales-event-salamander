@@ -3,10 +3,11 @@ from dotenv import load_dotenv
 import logging
 from datetime import datetime
 from sqlalchemy import create_engine, text
-from typing import Dict, List
+from typing import Dict, List, Tuple
 import json
 import glob
 from pathlib import Path
+import pandas as pd
 
 # Create logs directory if it doesn't exist
 if not os.path.exists('logs'):
@@ -209,12 +210,94 @@ def process_json_configs():
             logger.error(f"Error processing schema {schema_name}: {e}")
             continue
 
+def setup_country_table(engine, schema: str):
+    """Create country configs table if it doesn't exist"""
+    try:
+        with engine.connect() as conn:
+            setup_sql = read_sql_file('setup_country_configs.sql')
+            formatted_sql = setup_sql.format(schema=schema)
+            conn.execute(text(formatted_sql))
+            conn.commit()
+            logger.info(f"Successfully set up country configs table for {schema}")
+    except Exception as e:
+        logger.error(f"Error setting up country configs table for {schema}: {e}")
+        raise
+
+def get_region_for_country(country_code: str, regions_data: Dict) -> Tuple[str, str]:
+    """Get region and sub-region for a country code"""
+    for region, sub_regions in regions_data["regions"].items():
+        for sub_region, countries in sub_regions.items():
+            if country_code in countries:
+                return region, sub_region
+    return "Other", "Other"
+
+def upsert_country_config(engine, schema: str, code: str, country: str, region: str, sub_region: str):
+    """Insert or update country configuration"""
+    try:
+        with engine.connect() as conn:
+            upsert_sql = read_sql_file('upsert_country_config.sql')
+            formatted_sql = upsert_sql.format(schema=schema)
+            conn.execute(
+                text(formatted_sql),
+                {
+                    "code": code,
+                    "country": country,
+                    "region": region,
+                    "sub_region": sub_region
+                }
+            )
+            conn.commit()
+            logger.info(f"Updated country config for {code} ({country}) in schema {schema}")
+    except Exception as e:
+        logger.error(f"Error upserting country config for {code} in schema {schema}: {e}")
+        raise
+
+def process_country_data(engine, schema: str):
+    """Process country data from CSV and regions from JSON"""
+    try:
+        # Load regions data
+        with open('data_static/country_regions.json', 'r') as f:
+            regions_data = json.load(f)
+        
+        # Load country data
+        country_data = pd.read_csv('data_static/countries.csv')
+        
+        # Setup table
+        setup_country_table(engine, schema)
+        
+        # Process each country
+        for _, row in country_data.iterrows():
+            region, sub_region = get_region_for_country(str(row['Code']), regions_data)
+            upsert_country_config(
+                engine,
+                schema,
+                str(row['Code']),
+                str(row['Country']),
+                region,
+                sub_region
+            )
+            
+        logger.info(f"Successfully processed country data for schema {schema}")
+        
+    except Exception as e:
+        logger.error(f"Error processing country data for schema {schema}: {e}")
+        raise
+
 def main():
     load_dotenv()
     
-    # Process both ENV configs and JSON configs
-    process_env_configs()  # Your existing ENV processing
-    process_json_configs()  # New JSON processing
+    # Process all types of configurations
+    process_env_configs()
+    process_json_configs()
+    
+    # Process country data for each schema
+    engine = get_db_engine()
+    configs = get_event_configs()
+    
+    for region, config in configs.items():
+        schema_name = config.get("schema_name")
+        if schema_name:
+            process_country_data(engine, schema_name)
 
 if __name__ == "__main__":
     main() 

@@ -1,0 +1,32 @@
+{
+    "regions": {
+        "Asia": {
+            "East Asia": ["CN", "HK", "JP", "KR", "MO", "MN", "TW"],
+            "Southeast Asia": ["BN", "KH", "ID", "LA", "MY", "MM", "PH", "SG", "TH", "TL", "VN"],
+            "South Asia": ["BD", "BT", "IN", "MV", "NP", "PK", "LK"],
+            "Central Asia": ["KZ", "KG", "TJ", "TM", "UZ"]
+        },
+        "Europe": {
+            "Western Europe": ["AT", "BE", "FR", "DE", "LI", "LU", "MC", "NL", "CH"],
+            "Eastern Europe": ["BY", "BG", "CZ", "HU", "PL", "MD", "RO", "RU", "SK", "UA"],
+            "Northern Europe": ["DK", "EE", "FI", "IS", "IE", "LV", "LT", "NO", "SE", "GB"],
+            "Southern Europe": ["AL", "BA", "HR", "GR", "IT", "MT", "ME", "PT", "RS", "SI", "ES"]
+        },
+        "Middle East": {
+            "Middle East": ["BH", "IR", "IQ", "IL", "JO", "KW", "LB", "OM", "PS", "QA", "SA", "SY", "TR", "AE", "YE"]
+        },
+        "Oceania": {
+            "Oceania": ["AU", "FJ", "KI", "MH", "FM", "NR", "NZ", "PW", "PG", "WS", "SB", "TO", "TV", "VU"]
+        },
+        "Americas": {
+            "North America": ["CA", "MX", "US"],
+            "South America": ["AR", "BO", "BR", "CL", "CO", "EC", "GY", "PY", "PE", "SR", "UY", "VE"],
+            "Central America": ["BZ", "CR", "SV", "GT", "HN", "NI", "PA"],
+            "Caribbean": ["CU", "DO", "HT", "JM", "BS", "BB", "TT"]
+        },
+        "Africa": {
+            "North Africa": ["DZ", "EG", "LY", "MA", "SD", "TN"],
+            "Sub-Saharan Africa": ["AO", "BJ", "BW", "BF", "BI", "CM", "CV", "CF", "TD", "KM", "CD", "DJ", "GQ", "ER", "ET", "GA", "GM", "GH", "GN", "GW", "CI", "KE", "LS", "LR", "MG", "MW", "ML", "MR", "MU", "MZ", "NA", "NE", "NG", "RW", "ST", "SN", "SC", "SL", "SO", "ZA", "SS", "SZ", "TZ", "TG", "UG", "ZM", "ZW"]
+        }
+    }
+} 

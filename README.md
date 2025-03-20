@@ -74,7 +74,7 @@ EVENT_CONFIGS__region1__schema_name=region1
 EVENT_CONFIGS__region1__max_capacity=5000
 EVENT_CONFIGS__region1__start_wave=50
 EVENT_CONFIGS__region1__price_tier=L1
-EVENT_CONFIGS__region1__SLACK_CHANNEL=region1-channel
+EVENT_CONFIGS__region1__REGISTRATION_CHANNEL=region1-channel
 
 EVENT_CONFIGS__region2__token=your_api_token_2
 EVENT_CONFIGS__region2__event_id=your_event_id_2
@@ -82,7 +82,7 @@ EVENT_CONFIGS__region2__schema_name=region2
 EVENT_CONFIGS__region2__max_capacity=4000
 EVENT_CONFIGS__region2__start_wave=40
 EVENT_CONFIGS__region2__price_tier=L2
-EVENT_CONFIGS__region2__SLACK_CHANNEL=region2-channel
+EVENT_CONFIGS__region2__REGISTRATION_CHANNEL=region2-channel
 ```
 
 ## Installation & Usage

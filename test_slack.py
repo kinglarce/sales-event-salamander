@@ -13,7 +13,7 @@ def test_slack_connection():
     load_dotenv()
     
     slack_token = os.getenv("SLACK_API_TOKEN")
-    slack_channel = os.getenv("SLACK_CHANNEL", "")
+    REGISTRATION_CHANNEL = os.getenv("REGISTRATION_CHANNEL", "")
     
     if not slack_token:
         logger.error("Slack token not found in environment variables")
@@ -24,7 +24,7 @@ def test_slack_connection():
     try:
         # Test basic message posting
         response = client.chat_postMessage(
-            channel=slack_channel,
+            channel=REGISTRATION_CHANNEL,
             text="🤖 zZzZzZ"
         )
         logger.info(f"Message sent successfully: {response['ts']}")

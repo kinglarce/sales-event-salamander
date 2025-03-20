@@ -283,9 +283,9 @@ class SlackReporter:
         self.schema = schema
         self.db_manager = DatabaseManager(schema)
         self.slack_token = os.getenv("SLACK_API_TOKEN")
-        self.slack_channel = os.getenv(
-            f"EVENT_CONFIGS__{region}__SLACK_CHANNEL",
-            os.getenv("SLACK_CHANNEL", "events-sales-tracker")
+        self.REGISTRATION_CHANNEL = os.getenv(
+            f"EVENT_CONFIGS__{region}__REGISTRATION_CHANNEL",
+            os.getenv("REGISTRATION_CHANNEL", "events-sales-tracker")
         )
         
         # Define a mapping of regions to icons
@@ -297,7 +297,7 @@ class SlackReporter:
         if self.slack_token:
             self.slack_client = WebClient(token=self.slack_token)
             logger.info(f"Slack client initialized with token: {self.slack_token[:5]}...")
-            logger.info(f"Using Slack channel: {self.slack_channel}")
+            logger.info(f"Using Slack channel: {self.REGISTRATION_CHANNEL}")
         else:
             self.slack_client = None
             logger.warning("Slack token not found. Slack notifications will be disabled.")
@@ -534,14 +534,14 @@ class SlackReporter:
                 })
             
             # Send the message
-            logger.info(f"Sending Slack message to channel: {self.slack_channel}")
+            logger.info(f"Sending Slack message to channel: {self.REGISTRATION_CHANNEL}")
             
             response = self.slack_client.chat_postMessage(
-                channel=self.slack_channel,
+                channel=self.REGISTRATION_CHANNEL,
                 blocks=blocks
             )
             
-            logger.info(f"Slack report sent successfully to {self.slack_channel}")
+            logger.info(f"Slack report sent successfully to {self.REGISTRATION_CHANNEL}")
             return True
             
         except SlackApiError as e:
