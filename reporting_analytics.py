@@ -133,6 +133,7 @@ class SlackService:
         self.schema = schema
         self.region = region
         self.slack_token = os.getenv('SLACK_API_TOKEN')
+        # Look for both private and public channels
         self.channel_name = os.getenv(f'EVENT_CONFIGS__{region}__SLACK_CHANNEL', '#event-analytics')
         self.channel_id = None
         
@@ -147,6 +148,8 @@ class SlackService:
         """Get and cache the channel ID"""
         try:
             channel_name = self.channel_name.lstrip('#')
+            
+            # Try private channels first
             response = self.client.conversations_list(
                 types="private_channel",
                 exclude_archived=True
@@ -155,14 +158,26 @@ class SlackService:
             if response['ok']:
                 for channel in response['channels']:
                     if channel['name'] == channel_name:
-                        logger.info(f"Found channel ID for {channel_name}: {channel['id']}")
+                        logger.info(f"Found private channel ID for {channel_name}: {channel['id']}")
                         return channel['id']
             
-            logger.error(f"Channel not found: {channel_name}")
+            # Try public channels if not found in private
+            response = self.client.conversations_list(
+                types="public_channel",
+                exclude_archived=True
+            )
+            
+            if response['ok']:
+                for channel in response['channels']:
+                    if channel['name'] == channel_name:
+                        logger.info(f"Found public channel ID for {channel_name}: {channel['id']}")
+                        return channel['id']
+            
+            logger.error(f"Channel not found for {self.region}: {channel_name}")
             return None
             
         except SlackApiError as e:
-            logger.error(f"Error getting channel ID: {e.response['error']}")
+            logger.error(f"Error getting channel ID for {self.region}: {e.response['error']}")
             return None
 
     def send_report(self, df: pd.DataFrame) -> bool:
@@ -171,13 +186,47 @@ class SlackService:
             return False
 
         try:
-            blocks = self._format_age_group_table(df)
-            event_name = os.getenv(f'EVENT_CONFIGS__{self.region}__event_name', 'Event')
+            # Group ticket groups by category
+            singles = [g for g in df['ticket_group'].unique() if 'DOUBLES' not in g and 'RELAY' not in g]
+            doubles = [g for g in df['ticket_group'].unique() if 'DOUBLES' in g]
+            relays = [g for g in df['ticket_group'].unique() if 'RELAY' in g]
+
+            blocks = []
+            icon_mapping = self._load_icon_mapping()
+            icon = icon_mapping.get(self.region, icon_mapping["default"])
+            
+            blocks.append({
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": f"{icon} {self.schema.upper()} Age Group Distribution"
+                }
+            })
+
+            # Process each category separately
+            for category_groups in [singles, doubles, relays]:
+                if category_groups:
+                    # Process groups in pairs
+                    for i in range(0, len(category_groups), 2):
+                        batch_groups = category_groups[i:i+2]
+                        table_text = self._create_table_text(df, batch_groups)
+                        
+                        blocks.append({
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": table_text
+                            }
+                        })
+                        
+                    # Add divider between categories
+                    if category_groups != relays:  # Don't add divider after last category
+                        blocks.append({"type": "divider"})
             
             response = self.client.chat_postMessage(
                 channel=self.channel_id,
                 blocks=blocks,
-                text=f"{event_name} Age Group Distribution Report"
+                text=f"{self.schema.upper()} Age Group Distribution Report"
             )
             
             logger.info(f"Slack report sent successfully to {self.channel_name}")
@@ -187,28 +236,22 @@ class SlackService:
             logger.error(f"Error sending Slack report: {e.response['error']}")
             return False
 
-    def send_excel_report(self, file_path: str, initial_comment: str) -> bool:
+    def send_excel_report(self, file_path: str, message: str) -> bool:
         """Send Excel file to Slack"""
         if not self.client or not self.channel_id:
+            logger.error(f"Cannot send Excel report for {self.region}: client or channel not initialized")
             return False
 
         try:
-            with open(file_path, 'rb') as file:
-                response = self.client.files_upload_v2(
-                    channel=self.channel_id,
-                    initial_comment=initial_comment,
-                    file=file,
-                    filename=os.path.basename(file_path)
-                )
-                logger.info(f"Excel file uploaded successfully: {response['file']['name']}")
-                return True
-                
+            response = self.client.files_upload_v2(
+                channel=self.channel_id,
+                file=file_path,
+                initial_comment=message
+            )
+            logger.info(f"Excel report sent successfully to {self.channel_name} for {self.region}")
+            return True
         except SlackApiError as e:
-            logger.error(f"Error uploading file: {e.response['error']}")
-            logger.error(f"Error details: {e.response}")
-            return False
-        except Exception as e:
-            logger.error(f"Error uploading file: {e}")
+            logger.error(f"Error sending Excel report for {self.region}: {e.response['error']}")
             return False
 
     def _format_age_group_table(self, df: pd.DataFrame) -> List[Dict]:
@@ -267,10 +310,17 @@ class SlackService:
             table_text += f"{'-'*35} | "
         table_text = table_text.rstrip(" | ") + "\n"
         
-        # Data rows
-        age_ranges = ['U24', '25-29', '30-34', '35-39', '40-44', '45-49', 
-                      '50-54', '55-59', '60-64', '65-69', '70+', 'Incomplete', 'Total']
+        # Get appropriate age ranges based on first group's category
+        first_group = groups[0]
+        if 'DOUBLES' in first_group:
+            age_ranges = ['U29', '30-39', '40-49', '50-59', '60-69', '70+', 'Incomplete', 'Total']
+        elif 'RELAY' in first_group:
+            age_ranges = ['U40', '40+', 'Incomplete', 'Total']
+        else:  # Singles
+            age_ranges = ['U24', '25-29', '30-34', '35-39', '40-44', '45-49', 
+                         '50-54', '55-59', '60-64', '65-69', '70+', 'Incomplete', 'Total']
         
+        # Data rows
         for age_range in age_ranges:
             line = ""
             for group in groups:
@@ -294,6 +344,16 @@ class SlackService:
 
 class ExcelGenerator:
     """Handles Excel report generation"""
+    
+    @staticmethod
+    def get_age_ranges_for_category(category: str) -> List[str]:
+        if 'DOUBLES' in category:
+            return ['U29', '30-39', '40-49', '50-59', '60-69', '70+', 'Incomplete', 'Total']
+        elif 'RELAY' in category:
+            return ['U40', '40+', 'Incomplete', 'Total']
+        else:  # Singles
+            return ['U24', '25-29', '30-34', '35-39', '40-44', '45-49', 
+                    '50-54', '55-59', '60-64', '65-69', '70+', 'Incomplete', 'Total']
     
     def create_report(self, df: pd.DataFrame, event_info: Dict, schema: str, region: str) -> str:
         """Create Excel report and return file path"""
@@ -331,7 +391,8 @@ class ExcelGenerator:
             'valign': 'top', 
             'border': 1, 
             'align': 'center',
-            'bg_color': '#D3D3D3'  # Light gray background
+            'bg_color': '#8093B3',
+            'font_color': '#FFFFFF'
         })
         date_format = workbook.add_format({
             'bold': True, 
@@ -340,13 +401,23 @@ class ExcelGenerator:
         total_format = workbook.add_format({
             'bold': True,
             'border': 1,
-            'bg_color': '#F0F0F0'  # Lighter gray for totals
+            'bg_color': '#F0F0F0'
         })
         section_format = workbook.add_format({
             'bold': True, 
             'font_size': 12, 
+            'border': 1, 
             'align': 'left',
-            'bg_color': '#E0E0E0'  # Medium gray for section headers
+            'bg_color': '#8093B3',
+            'font_color': '#FFFFFF'
+        })
+        category_format = workbook.add_format({
+            'bold': True, 
+            'text_wrap': True, 
+            'valign': 'top', 
+            'border': 1, 
+            'align': 'left',
+            'bg_color': '#DFE4EC'
         })
         
         # Write event information
@@ -366,45 +437,33 @@ class ExcelGenerator:
         
         # Get unique ticket groups and age ranges
         ticket_groups = sorted(df['ticket_group'].unique())
-        age_ranges = ['U24', '25-29', '30-34', '35-39', '40-44', '45-49', 
-                     '50-54', '55-59', '60-64', '65-69', '70+', 'Incomplete', 'Total']
         
         current_row = 4
         max_col = 0
         
         # Define categories and their ticket groups
         categories = {
-            'Individual': ['HYROX MEN', 'HYROX WOMEN', 'HYROX PRO MEN', 'HYROX PRO WOMEN',
+            'SINGLES': ['HYROX MEN', 'HYROX WOMEN', 'HYROX PRO MEN', 'HYROX PRO WOMEN',
                          'HYROX ADAPTIVE MEN', 'HYROX ADAPTIVE WOMEN'],
-            'Doubles': ['HYROX DOUBLES MEN', 'HYROX DOUBLES WOMEN', 'HYROX DOUBLES MIXED',
+            'DOUBLES': ['HYROX DOUBLES MEN', 'HYROX DOUBLES WOMEN', 'HYROX DOUBLES MIXED',
                        'HYROX PRO DOUBLES MEN', 'HYROX PRO DOUBLES WOMEN'],
-            'Relay': ['HYROX MENS RELAY', 'HYROX WOMENS RELAY', 'HYROX MIXED RELAY'],
-            'Corporate Relay': ['HYROX MENS CORPORATE RELAY', 'HYROX WOMENS CORPORATE RELAY',
+            'RELAY': ['HYROX MENS RELAY', 'HYROX WOMENS RELAY', 'HYROX MIXED RELAY'],
+            'CORPORATE RELAY': ['HYROX MENS CORPORATE RELAY', 'HYROX WOMENS CORPORATE RELAY',
                               'HYROX MIXED CORPORATE RELAY']
         }
-        
-        def get_age_ranges_for_category(category: str) -> List[str]:
-            if 'Doubles' in category:
-                return ['U29', '30-39', '40-49', '50-59', '60-69', '70+', 'Incomplete', 'Total']
-            elif 'Relay' in category:
-                return ['U40', '40+', 'Incomplete', 'Total']
-            else:  # Singles
-                return ['U24', '25-29', '30-34', '35-39', '40-44', '45-49', 
-                       '50-54', '55-59', '60-64', '65-69', '70+', 'Incomplete', 'Total']
 
         # Write data for each category
         for category, groups in categories.items():
             existing_groups = [g for g in groups if g in ticket_groups]
             if not existing_groups:
                 continue
-                
-            # Write category header
-            worksheet.merge_range(current_row, 0, current_row, len(age_ranges), 
-                                category, section_format)
-            current_row += 1
             
             # Get appropriate age ranges for this category
-            age_ranges = get_age_ranges_for_category(category)
+            age_ranges = self.get_age_ranges_for_category(category)
+                
+            # Write category header
+            worksheet.merge_range(current_row, 0, current_row, len(age_ranges), category, section_format)
+            current_row += 1
             
             # Write age range headers
             worksheet.write(current_row, 0, "Age Range", header_format)
@@ -414,7 +473,7 @@ class ExcelGenerator:
             
             # Write data for each group
             for group in existing_groups:
-                worksheet.write(current_row, 0, group, header_format)
+                worksheet.write(current_row, 0, group, category_format)
                 for col, age_range in enumerate(age_ranges, 1):
                     count = df[(df['ticket_group'] == group) & 
                              (df['age_range'] == age_range)]['count'].values
@@ -438,6 +497,14 @@ class ExcelGenerator:
 
 class Analytics:
     """Main analytics coordinator"""
+
+    @staticmethod
+    def load_icon_mapping():
+        try:
+            with open("icons.json", "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {"default": "🎟️"}
     
     def __init__(self, schema: str, region: str):
         self.schema = schema
@@ -459,6 +526,7 @@ class Analytics:
             results = []
             
             if generate_excel:
+                # Generate and send Excel only
                 excel_path = self.excel_generator.create_report(
                     age_group_data,
                     event_info,
@@ -468,13 +536,17 @@ class Analytics:
                 results.append(bool(excel_path))
                 
                 if send_slack and excel_path:
+                    # Define a mapping of regions to icons
+                    icon_mapping = self.load_icon_mapping()
+                    # Get the icon based on the schema (which is the region)
+                    icon = icon_mapping.get(self.region, icon_mapping["default"])
                     success = self.slack_service.send_excel_report(
                         excel_path,
-                        f"Age Group Distribution Report for {event_info.get('name', 'Event')}"
+                        f"{icon} {event_info.get('name', 'Event')} Report"
                     )
                     results.append(success)
-
-            if send_slack:
+            elif send_slack:
+                # Send formatted message to Slack only if Excel is not requested
                 success = self.slack_service.send_report(age_group_data)
                 results.append(success)
 

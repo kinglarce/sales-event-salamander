@@ -119,8 +119,17 @@ docker-compose down
 # Re-build app for Environment changes
 docker-compose up --build -d app
 
-# Run
-docker exec -it vivenu-app python scripts/run_analytics.py
+# Run for Ingesting Data 
+docker exec -it vivenu-app python scripts/run_ingest.py
+
+# Run for Reporting Registration Data to Slack
+docker exec -it vivenu-app python ticket_analytics.py
+
+# Run for Reporting Age Group Data to Slack
+docker exec -it vivenu-app python reporting_analytics.py --slack
+
+# Run for Reporting Excel data and sending to Slack
+docker exec -it vivenu-app python reporting_analytics.py --slack --excel
 ```
 
 
