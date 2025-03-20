@@ -28,9 +28,13 @@ class Event(Base):
 
 class Ticket(Base):
     __tablename__ = "tickets"
+    __table_args__ = (
+        UniqueConstraint('id', name='tickets_pkey'),
+        {'schema': None}
+    )
     
     id = Column(String, primary_key=True)
-    region_schema = Column(String, nullable=False)
+    region_schema = Column(String)
     transaction_id = Column(String)
     ticket_type_id = Column(String)
     currency = Column(String)
@@ -40,7 +44,7 @@ class Ticket(Base):
     event_id = Column(String, ForeignKey("events.id"))
     ticket_name = Column(String)
     category_name = Column(String)
-    barcode = Column(String, unique=True)
+    barcode = Column(String)
     created_at = Column(DateTime)
     updated_at = Column(DateTime)
     city = Column(String)

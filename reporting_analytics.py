@@ -134,7 +134,7 @@ class SlackService:
         self.region = region
         self.slack_token = os.getenv('SLACK_API_TOKEN')
         # Look for both private and public channels
-        self.channel_name = os.getenv(f'EVENT_CONFIGS__{region}__REPORTING_CHANNEL', '#event-analytics')
+        self.channel_name = os.getenv(f'EVENT_CONFIGS__{region}__REPORTING_CHANNEL', '#test-hyrox-bot')
         self.channel_id = None
         
         if self.slack_token:

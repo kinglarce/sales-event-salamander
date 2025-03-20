@@ -423,11 +423,11 @@ class SlackReporter:
                 
                 # Create a formatted table
                 table_text = "```\n"
-                table_text += f"{'Ticket Group':<40} | {'No. Pax':>10} | {'%':>10}\n"
-                table_text += f"{'-'*40} | {'-'*10} | {'-'*10}\n"
+                table_text += f"{'Ticket Group':<50} | {'No. Pax':>12} | {'%':>12}\n"
+                table_text += f"{'-'*50} | {'-'*12} | {'-'*12}\n"
                 
                 for item in detailed_breakdown:
-                    table_text += f"{item['ticket_group']:<40} | {item['total']:>10} | {item['percentage']:>10}\n"
+                    table_text += f"{item['ticket_group']:<50} | {item['total']:>12} | {item['percentage']:>12}\n"
                 
                 table_text += "```"
                 

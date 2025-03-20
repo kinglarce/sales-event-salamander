@@ -1,13 +1,13 @@
 import logging
 import requests
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine, text, func, inspect
 from models.database import Base, Event, Ticket, TicketTypeSummary, SummaryReport
 import time
 from math import ceil
-from typing import Dict, Set, List, Tuple, Optional
+from typing import Dict, Set, List, Tuple, Optional, Union
 from dataclasses import dataclass
 from enum import Enum
 from collections import defaultdict
@@ -78,81 +78,60 @@ class VivenuAPI:
         response.raise_for_status()
         return response.json()
 
-def get_db_session(schema: str, skip_fetch: bool = False):
-    """Create database session with specific schema"""
-    # Use environment variables for database connection
-    db_url = f"postgresql://{os.getenv('POSTGRES_USER')}:{os.getenv('POSTGRES_PASSWORD')}@{os.getenv('POSTGRES_HOST')}:{os.getenv('POSTGRES_PORT')}/{os.getenv('POSTGRES_DB')}"
-    engine = create_engine(db_url)
-    
-    if not skip_fetch:
+class DatabaseManager:
+    def __init__(self, schema: str):
+        self.schema = schema
+        self.engine = self._create_engine()
+        self._session_factory = sessionmaker(bind=self.engine)
+
+    def _create_engine(self):
+        """Create database engine from environment variables"""
+        db_url = f"postgresql://{os.getenv('POSTGRES_USER')}:{os.getenv('POSTGRES_PASSWORD')}@{os.getenv('POSTGRES_HOST')}:{os.getenv('POSTGRES_PORT')}/{os.getenv('POSTGRES_DB')}"
+        return create_engine(db_url)
+
+    def get_session(self):
+        """Create a new session for each request"""
+        session = self._session_factory()
+        session.execute(text(f"SET search_path TO {self.schema}"))
+        return session
+
+    def setup_schema(self):
+        """Set up schema and tables"""
+        with self.engine.connect() as conn:
+            conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {self.schema}"))
+            conn.execute(text(f"SET search_path TO {self.schema}"))
+            
+            # Drop existing tables
+            if os.getenv('ENABLE_GROWTH_ANALYSIS', 'false').lower() != 'true':
+                conn.execute(text(f"DROP TABLE IF EXISTS {self.schema}.summary_report CASCADE"))
+            conn.execute(text(f"""
+                DROP TABLE IF EXISTS {self.schema}.ticket_type_summary CASCADE;
+                DROP TABLE IF EXISTS {self.schema}.tickets CASCADE;
+                DROP TABLE IF EXISTS {self.schema}.events CASCADE;
+            """))
+            conn.commit()
+
+        # Create tables
+        Base.metadata.schema = self.schema
+        Base.metadata.create_all(self.engine)
+        logger.info(f"Successfully set up schema and tables for {self.schema}")
+
+class TransactionManager:
+    def __init__(self, db_manager: DatabaseManager):
+        self.db_manager = db_manager
+
+    def __enter__(self):
+        self.session = self.db_manager.get_session()
+        return self.session
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
         try:
-            # Create schema if it doesn't exist and set it as default
-            with engine.connect() as conn:
-                conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
-                
-                if os.getenv('ENABLE_GROWTH_ANALYSIS', 'false').lower() != 'true':
-                    conn.execute(text(f"DROP TABLE IF EXISTS {schema}.summary_report CASCADE;"))
-                
-                # Drop existing tables except summary_report
-                conn.execute(text(f"""
-                    DROP TABLE IF EXISTS {schema}.ticket_type_summary CASCADE;
-                    DROP TABLE IF EXISTS {schema}.tickets CASCADE;
-                    DROP TABLE IF EXISTS {schema}.events CASCADE;
-                """))
-                logger.info(f"Dropped existing tables in schema {schema}")
-
-                # Set search path
-                conn.execute(text(f"SET search_path TO {schema}"))
-                conn.commit()
-                
-                logger.info(f"Successfully set up schema {schema}")
-        except Exception as e:
-            logger.error(f"Error setting up schema {schema}: {e}")
-            raise
-
-        try:
-            # Set schema for all tables
-            Base.metadata.schema = schema
-            
-            # Create tables using ORM
-            tables_to_create = []
-            summary_report_table = None
-            
-            # Separate summary_report table and other tables
-            for name, table in Base.metadata.tables.items():
-                if name.endswith('summary_report'):
-                    summary_report_table = table
-                else:
-                    tables_to_create.append(table)
-            
-            # Create other tables (always recreate)
-            Base.metadata.create_all(
-                engine, 
-                tables=tables_to_create,
-                checkfirst=False
-            )
-            
-            # Create summary_report table only if it doesn't exist
-            if summary_report_table is not None:
-                inspector = inspect(engine)
-                if 'summary_report' not in inspector.get_table_names(schema=schema):
-                    logger.info(f"Creating summary_report table in schema {schema}")
-                    summary_report_table.create(engine, checkfirst=True)
-            
-            logger.info(f"Successfully created tables in schema {schema}")
-            
-        except Exception as e:
-            logger.error(f"Error creating tables in schema {schema}: {e}")
-            raise
-
-    # Create session with correct schema
-    Session = sessionmaker(bind=engine)
-    session = Session()
-    
-    # Set search path for this session
-    session.execute(text(f"SET search_path TO {schema}"))
-    
-    return session
+            if exc_type is None:
+                self.session.commit()
+            else:
+                self.session.rollback()
+        finally:
+            self.session.close()
 
 def verify_tables(session, schema: str):
     """Verify that tables exist with correct columns"""
@@ -211,14 +190,14 @@ class LogConfig:
         else:
             logger.setLevel(logging.INFO)
 
-def calculate_age(birth_date) -> int | None:
+def calculate_age(birth_date) -> Union[int, None]:
     if birth_date:
         birth_date = datetime.strptime(birth_date, "%Y-%m-%d")
         today = datetime.today()
         return today.year - birth_date.year - ((today.month, today.day) < (birth_date.month, birth_date.day))
     return None
 
-def standardize_gender(gender: str) -> str | None:
+def standardize_gender(gender: str) -> Union[str, None]:
     """Standardize gender input to 'Male' or 'Female'."""
     if gender:
         gender_lower = gender.lower()
@@ -227,63 +206,6 @@ def standardize_gender(gender: str) -> str | None:
         elif gender_lower in ['female', 'woman', 'women']:
             return 'Female'
     return None
-
-def process_ticket_data(session, ticket_data, event_data, schema):
-    """Process ticket data and store in database"""
-    try:
-        ticket_id = ticket_data.get("_id")
-        event_id = event_data.get("_id")
-
-        if LogConfig.DEBUG_ENABLED:
-            logger.debug(f"Schema: {schema}, Event ID: {event_id}, Ticket ID: {ticket_id}")
-
-        # Check if event exist
-        if event_id != ticket_data.get("eventId"):
-            logger.debug(f"Skipping ticket {ticket_id} - event {event_id} not found in database")
-            return None
-
-        # Check if event exists in database
-        event = session.query(Event).filter(Event.id == event_id).first()
-        if not event:
-            logger.debug(f"Skipping ticket {ticket_id} - event {event_id} not found in database")
-            return None
-
-        # Get ticket name and check for None
-        ticket_name = ticket_data.get("name")
-        if ticket_name is None:
-            logger.warning(f"Ticket name is None for ticket ID {ticket_id}. Skipping this ticket.")
-            return None  # Skip this ticket if the name is None
-
-        # Create the Ticket object with all relevant fields
-        ticket = Ticket(
-            id=ticket_data.get("_id"),
-            region_schema=schema,
-            transaction_id=ticket_data.get("transactionId"),
-            ticket_type_id=ticket_data.get("ticketTypeId"),
-            currency=ticket_data.get("currency"),
-            status=ticket_data.get("status"),
-            personalized=ticket_data.get("personalized", False),
-            expired=ticket_data.get("expired", False),
-            event_id=ticket_data.get("eventId"),
-            ticket_name=ticket_data.get("ticketName"),
-            category_name=ticket_data.get("categoryName"),
-            barcode=ticket_data.get("barcode"),
-            created_at=ticket_data.get("createdAt"),
-            updated_at=ticket_data.get("updatedAt"),
-            city=ticket_data.get("city"),
-            country=ticket_data.get("country"),
-            customer_id=ticket_data.get("customerId"),
-            gender=standardize_gender(ticket_data.get("extraFields", {}).get("gender")),
-            birthday=ticket_data.get("extraFields", {}).get("birth_date"),
-            age=calculate_age(ticket_data.get("extraFields", {}).get("birth_date"))
-        )
-
-        session.add(ticket)
-        return ticket
-
-    except Exception as e:
-        logger.error(f"Error processing ticket data: {e}")
-        return None
 
 def parse_datetime(dt_str):
     """Parse datetime string to datetime object"""
@@ -431,118 +353,220 @@ def create_event(session: sessionmaker, event_data: dict, schema: str) -> Event:
         logger.error(f"Error creating event: {e}")
         raise
 
-def process_batch(session, tickets, event_data, schema):
-    processed = 0
-    for ticket in tickets:
-        result = process_ticket_data(session, ticket, event_data, schema)
-        if result:
-            processed += 1
+class TicketProcessor:
+    """Efficient ticket processing with lookup caching and validation"""
+    
+    def __init__(self, session, schema):
+        self.session = session
+        self.schema = schema
+        self.existing_tickets_cache = {}
+    
+    def get_existing_ticket(self, ticket_id: str) -> Optional[Ticket]:
+        """Efficiently lookup ticket from cache or database"""
+        cache_key = f"{ticket_id}_{self.schema}"
+        if cache_key not in self.existing_tickets_cache:
+            ticket = self.session.query(Ticket).filter(
+                Ticket.id == ticket_id,
+                Ticket.region_schema == self.schema
+            ).first()
+            self.existing_tickets_cache[cache_key] = ticket
+        return self.existing_tickets_cache[cache_key]
+    
+    def process_ticket(self, ticket_data: Dict, event_data: Dict) -> Optional[Ticket]:
+        """Process single ticket with validation and efficient lookup"""
+        ticket_id = str(ticket_data.get("_id"))
+        if not ticket_id:
+            logger.warning("Ticket ID is missing, skipping")
+            return None
 
+        try:
+            # Basic validations
+            event_id = event_data.get("_id")
+            if event_id != ticket_data.get("eventId"):
+                logger.debug(f"Skipping ticket {ticket_id} - event ID mismatch")
+                return None
+
+            ticket_name = ticket_data.get("ticketName")
+            if not ticket_name:
+                logger.warning(f"Ticket name is missing for ticket ID {ticket_id}")
+                return None
+
+            # Prepare ticket values
+            ticket_values = {
+                'id': ticket_id,
+                'region_schema': self.schema,
+                'transaction_id': ticket_data.get("transactionId"),
+                'ticket_type_id': ticket_data.get("ticketTypeId"),
+                'currency': ticket_data.get("currency"),
+                'status': ticket_data.get("status"),
+                'personalized': ticket_data.get("personalized", False),
+                'expired': ticket_data.get("expired", False),
+                'event_id': event_id,
+                'ticket_name': ticket_name,
+                'category_name': ticket_data.get("categoryName"),
+                'barcode': ticket_data.get("barcode"),
+                'created_at': ticket_data.get("createdAt"),
+                'updated_at': ticket_data.get("updatedAt"),
+                'city': ticket_data.get("city"),
+                'country': ticket_data.get("country"),
+                'customer_id': ticket_data.get("customerId"),
+                'gender': standardize_gender(ticket_data.get("extraFields", {}).get("gender")),
+                'birthday': ticket_data.get("extraFields", {}).get("birth_date"),
+                'age': calculate_age(ticket_data.get("extraFields", {}).get("birth_date"))
+            }
+
+            # Update or create ticket
+            existing_ticket = self.get_existing_ticket(ticket_id)
+            if existing_ticket:
+                for key, value in ticket_values.items():
+                    setattr(existing_ticket, key, value)
+                return existing_ticket
+            else:
+                new_ticket = Ticket(**ticket_values)
+                self.session.add(new_ticket)
+                self.existing_tickets_cache[f"{ticket_id}_{self.schema}"] = new_ticket
+                return new_ticket
+
+        except Exception as e:
+            logger.error(f"Error processing ticket {ticket_id}: {str(e)}")
+            return None
+
+    def clear_cache(self):
+        """Clear the lookup cache"""
+        self.existing_tickets_cache.clear()
+
+def process_batch(session, tickets: List, event_data: Dict, schema: str):
+    """Process batch of tickets using TicketProcessor"""
+    processed = 0
+    failed = 0
+    
+    processor = TicketProcessor(session, schema)
+    
+    for ticket in tickets:
+        try:
+            result = processor.process_ticket(ticket, event_data)
+            if result:
+                processed += 1
+        except Exception as e:
+            failed += 1
+            logger.error(f"Failed to process ticket {ticket.get('_id')}: {str(e)}")
+            continue
+    
+    processor.clear_cache()
+    logger.info(f"Batch summary - Processed: {processed}, Failed: {failed}")
     return processed
+
+class BatchProcessor:
+    def __init__(self, batch_size: int = 1000, max_workers: int = 5):
+        self.batch_size = batch_size
+        self.max_workers = max_workers
+
+    def process_tickets(self, api: VivenuAPI, db_manager: DatabaseManager, event_data: Dict, schema: str) -> int:
+        """Process tickets in optimized batches with parallel API requests"""
+        first_batch = api.get_tickets(skip=0, limit=1)
+        total_tickets = first_batch.get("total", 0)
+        if not total_tickets:
+            logger.warning("No tickets found to process")
+            return 0
+
+        total_batches = ceil(total_tickets / self.batch_size)
+        processed_total = 0
+        logger.info(f"Processing {total_tickets} tickets in {total_batches} batches")
+
+        # Process in chunks of max_workers for controlled parallelism
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            for chunk_start in range(0, total_batches, self.max_workers):
+                chunk_end = min(chunk_start + self.max_workers, total_batches)
+                
+                # Submit API requests in parallel
+                future_to_batch = {
+                    executor.submit(self._fetch_batch, api, batch_num): batch_num
+                    for batch_num in range(chunk_start, chunk_end)
+                }
+
+                # Process results as they complete
+                for future in as_completed(future_to_batch):
+                    batch_num = future_to_batch[future]
+                    try:
+                        tickets = future.result()
+                        if tickets:
+                            # Process batch in its own transaction
+                            with TransactionManager(db_manager) as session:
+                                processed = process_batch(session, tickets, event_data, schema)
+                                processed_total += processed
+                                logger.info(
+                                    f"Batch {batch_num + 1}/{total_batches} complete. "
+                                    f"Processed: {processed}/{len(tickets)} tickets. "
+                                )
+                    except Exception as e:
+                        logger.error(f"Error processing batch {batch_num}: {str(e)}")
+
+        return processed_total
+
+    def _fetch_batch(self, api: VivenuAPI, batch_num: int) -> List[Dict]:
+        """Fetch a single batch of tickets with retries"""
+        max_retries = 3
+        retry_delay = 1  # seconds
+
+        for attempt in range(max_retries):
+            try:
+                skip = batch_num * self.batch_size
+                response = api.get_tickets(skip=skip, limit=self.batch_size)
+                return response.get("rows", [])  # Return empty list as default
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    logger.error(f"Failed to fetch batch {batch_num} after {max_retries} attempts: {str(e)}")
+                    return []  # Return empty list on failure
+                time.sleep(retry_delay * (attempt + 1))
 
 def ingest_data(token: str, event_id: str, schema: str, skip_fetch: bool = False, debug: bool = False):
     """Main ingestion function"""
-    # Set debug logging
     LogConfig.set_debug(debug)
-    
     api = VivenuAPI(token)
-    session = get_db_session(schema, skip_fetch=skip_fetch)
-    
-    if skip_fetch:
-        logger.info("Skipping API fetch. Proceeding with update_ticket_summary and update_summary_report.")
-        update_ticket_summary(session, schema, event_id)
-        update_summary_report(session, schema, event_id)
-        session.close()
-        return
+    db_manager = DatabaseManager(schema)
     
     try:
-        # Verify tables are correctly set up
-        verify_tables(session, schema)
-        
-        # Fetch and store events
+        if not skip_fetch:
+            db_manager.setup_schema()
+
+        if skip_fetch:
+            with TransactionManager(db_manager) as session:
+                update_ticket_summary(session, schema, event_id)
+                update_summary_report(session, schema, event_id)
+            return
+
+        # Process event data
         events = api.get_events()
-        event = None
         found_event_data = None
-        for event_data in events["rows"]:
-            if event_data.get("_id") == event_id:
-                event = create_event(session, event_data, schema)
-                found_event_data = event_data
-                logger.info(f"Found matching event: {event_id}")
-                break
         
-        if not event:
-            logger.error(f"Event {event_id} not found in fetched events")
+        with TransactionManager(db_manager) as session:
+            verify_tables(session, schema)
+            for event_data in events["rows"]:
+                if event_data.get("_id") == event_id:
+                    event = create_event(session, event_data, schema)
+                    found_event_data = event_data
+                    logger.info(f"Found matching event: {event_id}")
+                    break
+
+        if not found_event_data:
+            logger.error(f"Event {event_id} not found")
             return
 
-        # Fetch tickets with controlled parallelization
-        batch_size = 1000
-        max_concurrent_requests = 3
-        processed_tickets = 0
+        # Process tickets with optimized batching
+        batch_processor = BatchProcessor(batch_size=1000, max_workers=5)
+        processed_count = batch_processor.process_tickets(api, db_manager, found_event_data, schema)
         
-        # Get first batch to determine total
-        first_batch = api.get_tickets(skip=0, limit=1)
-        if not first_batch or "total" not in first_batch:
-            logger.warning(f"No tickets found for event {event_id}")
-            return
-
-        total_tickets = first_batch["total"]
-        total_batches = ceil(total_tickets / batch_size)
-        logger.info(f"Total tickets to be processed for {schema} schema: {total_tickets}")
-        logger.info(f"Total tickets: {total_tickets}, Total batches: {total_batches}")
-
-        # Process batches in chunks to control concurrency
-        with ThreadPoolExecutor(max_workers=max_concurrent_requests) as executor:
-            for batch_start in range(0, total_batches, max_concurrent_requests):
-                batch_offsets = [
-                    i * batch_size 
-                    for i in range(batch_start, min(batch_start + max_concurrent_requests, total_batches))
-                ]
+        if processed_count > 0:
+            # Update summaries in final transaction
+            with TransactionManager(db_manager) as session:
+                update_ticket_summary(session, schema, event_id)
+                update_summary_report(session, schema, event_id)
                 
-                logger.info(f"Processing batch offsets: {batch_offsets}")
-                
-                future_to_offset = {
-                    executor.submit(api.get_tickets, offset, batch_size): offset
-                    for offset in batch_offsets
-                }
+            logger.info(f"Successfully processed {processed_count} tickets for event {event_id}")
 
-                for future in future_to_offset:
-                    try:
-                        tickets_response = future.result()
-                        tickets = tickets_response.get("rows", [])
-                        offset = future_to_offset[future]
-                        
-                        logger.info(f"Processing {len(tickets)} tickets from offset {offset}")
-                        batch_processed = process_batch(session, tickets, found_event_data, schema)
-                        processed_tickets += batch_processed
-                        
-                        # Commit after each batch
-                        try:
-                            session.commit()
-                            logger.info(f"Processed batch at offset {offset}. "
-                                      f"Batch processed: {batch_processed}, "
-                                      f"Total progress: {processed_tickets}/{total_tickets} tickets")
-                        except Exception as e:
-                            logger.error(f"Error committing batch: {e}")
-                            session.rollback()
-
-                    except Exception as e:
-                        logger.error(f"Error processing batch: {e}", exc_info=True)
-                        session.rollback()
-
-        # Final commit and summary update
-        session.commit()
-        logger.info(f"Successfully processed {processed_tickets} tickets for event {event_id}")
-        
-        # Update summaries
-        update_ticket_summary(session, schema, event_id)
-        update_summary_report(session, schema, event_id)
-        
     except Exception as e:
-        session.rollback()
-        logger.error(f"Error during ingestion for schema {schema}: {e}", exc_info=True)
+        logger.error(f"Error during ingestion for schema {schema}: {str(e)}", exc_info=True)
         raise
-    finally:
-        session.close()
 
 def get_event_configs():
     """Get all event configurations from environment"""
