@@ -53,7 +53,7 @@ POSTGRES_USER=postgres
 POSTGRES_PASSWORD=your_secure_password
 POSTGRES_HOST=postgres
 POSTGRES_PORT=5432
-POSTGRES_DB=vivenu_db
+POSTGRES_DB=yourdb
 
 # Slack config
 SLACK_API_TOKEN=xoxb-XXXX
