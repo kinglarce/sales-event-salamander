@@ -1,10 +1,10 @@
-# Vivenu Sales Data Pipeline
+# Sales Data Pipeline Salamander 🦎
 
-A robust data pipeline for fetching and processing Vivenu event and ticket data, built with Python, PostgreSQL, and Docker.
+A robust data pipeline for fetching and processing events and ticket data, built with Python, PostgreSQL, and Docker.
 
 ## Project Structure
 ```
-vivenu-pipeline/
+pipeline/
 ├── models/
 │   └── database.py      # SQLAlchemy models
 ├── data_static/ 
@@ -65,7 +65,7 @@ ENABLE_GROWTH_ANALYSIS=false
 ENABLE_PROJECTIONS=false
 
 # API config
-EVENT_API_BASE_URL=https://vivenu.com/api
+EVENT_API_BASE_URL=
 
 # Event configurations
 EVENT_CONFIGS__region1__token=your_api_token_1
