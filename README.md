@@ -63,6 +63,7 @@ PROJECTION_MINUTES=3
 HISTORY_MINUTES=15
 ENABLE_GROWTH_ANALYSIS=false
 ENABLE_PROJECTIONS=false
+ENABLE_FILE_LOGGING=true
 
 # API config
 EVENT_API_BASE_URL=
@@ -74,7 +75,7 @@ EVENT_CONFIGS__region1__schema_name=region1
 EVENT_CONFIGS__region1__max_capacity=5000
 EVENT_CONFIGS__region1__start_wave=50
 EVENT_CONFIGS__region1__price_tier=L1
-EVENT_CONFIGS__region1__REGISTRATION_CHANNEL=region1-channel
+EVENT_CONFIGS__region1__REPORTING_CHANNEL=region1-channel
 
 EVENT_CONFIGS__region2__token=your_api_token_2
 EVENT_CONFIGS__region2__event_id=your_event_id_2
@@ -83,6 +84,7 @@ EVENT_CONFIGS__region2__max_capacity=4000
 EVENT_CONFIGS__region2__start_wave=40
 EVENT_CONFIGS__region2__price_tier=L2
 EVENT_CONFIGS__region2__REGISTRATION_CHANNEL=region2-channel
+EVENT_CONFIGS__region2__REPORTING_CHANNEL=region2-channel
 ```
 
 ## Installation & Usage
