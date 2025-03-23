@@ -39,34 +39,27 @@ class AgeGroupIngester:
         self.engine = self._create_engine()
         
     def _create_engine(self):
-        """Create database engine from environment variables"""
         db_url = f"postgresql://{os.getenv('POSTGRES_USER')}:{os.getenv('POSTGRES_PASSWORD')}@{os.getenv('POSTGRES_HOST')}:{os.getenv('POSTGRES_PORT')}/{os.getenv('POSTGRES_DB')}"
         return create_engine(db_url)
     
     def _read_sql_file(self, filename: str) -> str:
-        """Read SQL file and format with schema"""
         with open(os.path.join('sql', filename), 'r') as f:
             return f.read().replace('{SCHEMA}', self.schema)
     
     def setup_tables(self):
-        """Set up necessary database tables"""
         try:
             with self.engine.connect() as conn:
-                # Drop existing table first
                 conn.execute(text(f"DROP TABLE IF EXISTS {self.schema}.ticket_age_groups CASCADE;"))
-                
-                # Create new table
                 setup_sql = self._read_sql_file('setup_ticket_age_groups.sql')
                 conn.execute(text(setup_sql))
                 conn.commit()
-                
             logger.info(f"Successfully set up age groups table for {self.schema}")
         except Exception as e:
             logger.error(f"Error setting up age groups table for {self.schema}: {e}")
             raise
     
     def get_age_ranges(self, category: str) -> List[Tuple[str, Optional[int], Optional[int]]]:
-        """Get list of age group ranges based on ticket category"""
+        """Get age ranges based on category, ensuring proper group size handling"""
         if category == "double":
             return [
                 ("U29", 0, 29),
@@ -75,7 +68,7 @@ class AgeGroupIngester:
                 ("50-59", 50, 59),
                 ("60-69", 60, 69),
                 ("70+", 70, 999),
-                ("Incomplete", None, None)
+                ("Incomplete", None, None),
             ]
         elif category == "relay":
             return [
@@ -100,26 +93,20 @@ class AgeGroupIngester:
             ]
 
     def process_age_groups(self):
-        """Process age groups for all ticket types"""
         try:
             groups_sql = self._read_sql_file('get_ticket_groups.sql')
             count_sql = self._read_sql_file('get_age_group_count.sql')
             upsert_sql = self._read_sql_file('upsert_ticket_age_group.sql')
             
-            with self.engine.connect() as conn:
-                # Get ticket groups with their categories
+            with self.engine.begin() as conn:
                 ticket_groups_result = conn.execute(text(groups_sql))
-                ticket_groups = [(row[0], row[1]) for row in ticket_groups_result]  # (group, category)
+                ticket_groups = [(row[0], row[1]) for row in ticket_groups_result]
                 
                 updates = []
                 for group, category in ticket_groups:
-                    group_total = 0  # Initialize total for each group
-                    
-                    # Get appropriate age ranges for this category
-                    age_ranges = self.get_age_ranges(category.lower())
-                    
-                    # Process each age range
-                    for range_name, min_age, max_age in age_ranges:
+                    total = 0
+                    # Process all age ranges including incomplete
+                    for range_name, min_age, max_age in self.get_age_ranges(category.lower()):
                         params = {
                             "ticket_group": group,
                             "min_age": min_age,
@@ -127,38 +114,39 @@ class AgeGroupIngester:
                             "is_incomplete": range_name == "Incomplete"
                         }
                         
-                        count = conn.execute(text(count_sql), params).scalar()
+                        result = conn.execute(text(count_sql), params).fetchone()
+                        count, group_total = result[0], result[1]
                         
-                        if count > 0:
-                            group_total += count
+                        if count and count > 0:
                             updates.append({
                                 "ticket_group": group,
                                 "age_range": range_name,
                                 "count": count
                             })
+                            total = group_total  # Update total from any valid count
                     
-                    # Add total for this group if there were any counts
-                    if group_total > 0:
+                    # Add total after processing all ranges
+                    if total > 0:
                         updates.append({
                             "ticket_group": group,
                             "age_range": "Total",
-                            "count": group_total
+                            "count": total
                         })
-                
-                # Execute all updates
-                if updates:
-                    for update in updates:
-                        conn.execute(text(upsert_sql), update)
-                    conn.commit()
-                
-                logger.info(f"Successfully processed {len(updates)} age group records for {self.schema}")
-                
+                    
+                    # Execute all updates
+                    if updates:
+                        for update in updates:
+                            conn.execute(text(upsert_sql), update)
+            
+            logger.info(f"Successfully processed {len(updates)} age group records for {self.schema}")
+            
         except Exception as e:
             logger.error(f"Error processing age groups: {e}")
             raise
 
 def process_schemas():
-    """Process age groups for all configured schemas"""
+    load_dotenv()
+    
     for key in os.environ:
         if key.startswith("EVENT_CONFIGS__") and key.endswith("__schema_name"):
             schema = os.environ[key]
@@ -172,9 +160,5 @@ def process_schemas():
                 logger.error(f"Failed to process schema {schema}: {e}")
                 continue
 
-def main():
-    load_dotenv()
-    process_schemas()
-
 if __name__ == "__main__":
-    main() 
+    process_schemas() 
