@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, text, func, inspect
 from models.database import Base, Event, Ticket, TicketTypeSummary, SummaryReport
 import time
 from math import ceil
-from typing import Dict, Set, List, Tuple, Optional, Union
+from typing import Dict, Set, List, Tuple, Optional, Union, Any
 from dataclasses import dataclass
 from enum import Enum
 from collections import defaultdict
@@ -52,6 +52,24 @@ class TicketEventDay(Enum):
     FRIDAY = "friday"
     SATURDAY = "saturday"
     SUNDAY = "sunday"
+
+class GymMembershipStatus(Enum):
+    """Standardized gym membership status"""
+    MEMBER_OTHER = "I'm a member of another"
+    MEMBER = "I'm a member"
+    NOT_MEMBER = "I'm not a member"
+    
+    @classmethod
+    def parse(cls, value: Optional[str]) -> Optional['GymMembershipStatus']:
+        """Parse membership status from input string"""
+        if not value:
+            return None
+            
+        normalized = value.lower().strip()
+        for status in cls:
+            if status.value.lower() in normalized:
+                return status
+        return None
 
 class VivenuAPI:
     def __init__(self, token: str):
@@ -353,6 +371,62 @@ def create_event(session: sessionmaker, event_data: dict, schema: str) -> Event:
         logger.error(f"Error creating event: {e}")
         raise
 
+class CustomFieldMapper:
+    """Manages custom field mappings for different regions/schemas"""
+    
+    def __init__(self, schema: str):
+        self.schema = schema
+        self._field_mappings = self._load_field_mappings()
+
+    def _load_field_mappings(self) -> Dict[str, str]:
+        """
+        Dynamically load all field mappings from environment variables
+        Format: EVENT_CONFIGS__{schema}__field_{database_column}={api_field_name}
+        """
+        mappings = {}
+        prefix = f'EVENT_CONFIGS__{self.schema}__field_'
+        
+        # Scan all environment variables for field mappings
+        for key, value in os.environ.items():
+            if key.startswith(prefix):
+                # Convert environment key to database column name
+                db_column = key[len(prefix):].lower()
+                mappings[db_column] = value
+                
+        logger.debug(f"Loaded field mappings for schema {self.schema}: {mappings}")
+        return mappings
+
+    def get_field_value(self, extra_fields: Dict[str, Any], db_column: str) -> Optional[Any]:
+        """Get value from extra_fields using the mapped API field name"""
+        api_field = self._field_mappings.get(db_column)
+        if not api_field:
+            return None
+        return extra_fields.get(api_field)
+
+    def get_gym_affiliate(self, extra_fields: Dict[str, Any]) -> Optional[str]:
+        """
+        Determine gym affiliate based on membership status and region
+        
+        Args:
+            extra_fields: Dictionary containing ticket extra fields
+            
+        Returns:
+            Resolved gym affiliate value or None
+        """
+        # Get membership status
+        is_gym_affiliate_condition = self.get_field_value(extra_fields, 'is_gym_affiliate')
+        membership_status = GymMembershipStatus.parse(is_gym_affiliate_condition)
+        
+        if not membership_status:
+            return None
+            
+        if membership_status == GymMembershipStatus.MEMBER_OTHER:
+            return self.get_field_value(extra_fields, 'gym_affiliate_other_region')
+        elif membership_status == GymMembershipStatus.MEMBER:
+            return self.get_field_value(extra_fields, 'gym_affiliate')
+        
+        return None
+
 class TicketProcessor:
     """Efficient ticket processing with lookup caching and validation"""
     
@@ -360,6 +434,7 @@ class TicketProcessor:
         self.session = session
         self.schema = schema
         self.existing_tickets_cache = {}
+        self.field_mapper = CustomFieldMapper(schema)
     
     def get_existing_ticket(self, ticket_id: str) -> Optional[Ticket]:
         """Efficiently lookup ticket from cache or database"""
@@ -391,6 +466,15 @@ class TicketProcessor:
                 logger.warning(f"Ticket name is missing for ticket ID {ticket_id}")
                 return None
 
+            # Get extra fields
+            extra_fields = ticket_data.get("extraFields", {})
+
+            # Get membership status for logging
+            is_gym_affiliate_condition = self.field_mapper.get_field_value(extra_fields, 'is_gym_affiliate')
+            membership_status = GymMembershipStatus.parse(is_gym_affiliate_condition)
+            if membership_status:
+                logger.debug(f"Ticket {ticket_id} membership status: {membership_status.name}")
+
             # Prepare ticket values
             ticket_values = {
                 'id': ticket_id,
@@ -410,9 +494,13 @@ class TicketProcessor:
                 'city': ticket_data.get("city"),
                 'country': ticket_data.get("country"),
                 'customer_id': ticket_data.get("customerId"),
-                'gender': standardize_gender(ticket_data.get("extraFields", {}).get("gender")),
-                'birthday': ticket_data.get("extraFields", {}).get("birth_date"),
-                'age': calculate_age(ticket_data.get("extraFields", {}).get("birth_date"))
+                'gender': standardize_gender(extra_fields.get("gender")),
+                'birthday': extra_fields.get("birth_date"),
+                'age': calculate_age(extra_fields.get("birth_date")),
+                'region_of_residence': extra_fields.get("region_of_residence"),
+                'is_gym_affiliate': is_gym_affiliate_condition,
+                'gym_affiliate': self.field_mapper.get_gym_affiliate(extra_fields),
+                'gym_affiliate_region_located': self.field_mapper.get_field_value(extra_fields, 'gym_affiliate_region_located')
             }
 
             # Update or create ticket
