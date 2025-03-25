@@ -126,6 +126,99 @@ class DataProvider:
             logger.error(f"Error getting event info: {e}")
             return {}
 
+    def get_returning_athletes_data(self) -> Dict[str, int]:
+        """Get counts of returning athletes"""
+        try:
+            query = f"""
+                SELECT 
+                    SUM(CASE WHEN is_returning_athlete = true THEN 1 ELSE 0 END) as returning_athletes,
+                    SUM(CASE WHEN is_returning_athlete_to_city = true THEN 1 ELSE 0 END) as returning_to_city
+                FROM {self.schema}.tickets
+            """
+            result = self.db.execute_query(query)
+            if result:
+                return {
+                    'returning_athletes': result[0][0] or 0,
+                    'returning_to_city': result[0][1] or 0
+                }
+            return {'returning_athletes': 0, 'returning_to_city': 0}
+        except Exception as e:
+            logger.error(f"Error getting returning athletes data: {e}")
+            return {'returning_athletes': 0, 'returning_to_city': 0}
+
+    def get_region_of_residence_data(self) -> pd.DataFrame:
+        """Get region of residence distribution"""
+        try:
+            query = f"""
+                SELECT 
+                    region_of_residence,
+                    COUNT(*) as count
+                FROM {self.schema}.tickets
+                WHERE region_of_residence IS NOT NULL
+                GROUP BY region_of_residence
+                ORDER BY count DESC
+            """
+            results = self.db.execute_query(query)
+            return pd.DataFrame(results, columns=['region', 'count'])
+        except Exception as e:
+            logger.error(f"Error getting region of residence data: {e}")
+            return pd.DataFrame()
+
+    def get_gym_affiliate_data(self) -> Dict[str, Any]:
+        """Get gym affiliate statistics"""
+        try:
+            # Get membership status counts using exact GymMembershipStatus values
+            membership_query = f"""
+                SELECT 
+                    is_gym_affiliate as membership_status,
+                    COUNT(*) as count
+                FROM {self.schema}.tickets
+                WHERE is_gym_affiliate IN ('I''m a member', 'I''m a member of another', 'I''m not a member')
+                GROUP BY is_gym_affiliate
+                ORDER BY 
+                    CASE 
+                        WHEN is_gym_affiliate = 'I''m a member' THEN 1
+                        WHEN is_gym_affiliate = 'I''m a member of another' THEN 2
+                        WHEN is_gym_affiliate = 'I''m not a member' THEN 3
+                    END
+            """
+            membership_results = self.db.execute_query(membership_query)
+            membership_counts = {row[0]: row[1] for row in membership_results}
+
+            # Get gym affiliate details for members
+            member_details_query = f"""
+                SELECT 
+                    is_gym_affiliate as membership_type,
+                    COALESCE(gym_affiliate, 'N/A') as gym,
+                    COALESCE(gym_affiliate_location, 'N/A') as location,
+                    COUNT(*) as count
+                FROM {self.schema}.tickets
+                WHERE is_gym_affiliate IN ('I''m a member', 'I''m a member of another')
+                  AND gym_affiliate IS NOT NULL
+                GROUP BY 
+                    is_gym_affiliate,
+                    gym_affiliate,
+                    gym_affiliate_location
+                ORDER BY is_gym_affiliate, count DESC
+            """
+            member_details = self.db.execute_query(member_details_query)
+            
+            return {
+                'membership_counts': membership_counts,
+                'member_details': [
+                    {
+                        'membership_type': row[0],
+                        'gym': row[1],
+                        'location': row[2],
+                        'count': row[3]
+                    }
+                    for row in member_details
+                ]
+            }
+        except Exception as e:
+            logger.error(f"Error getting gym affiliate data: {e}")
+            return {'membership_counts': {}, 'member_details': []}
+
 class SlackService:
     """Handles Slack communication"""
     
@@ -367,7 +460,12 @@ class ExcelGenerator:
         
         try:
             with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
+                # Add database manager to writer object
+                writer.db_manager = DatabaseManager(schema)
                 self._generate_excel_content(writer, df, event_info)
+                self._generate_additional_stats_content(writer, event_info)
+                # Close database connection
+                writer.db_manager.close()
             logger.info(f"Excel file created: {filename}")
             return filename
         except Exception as e:
@@ -494,6 +592,167 @@ class ExcelGenerator:
         
         # Freeze panes
         worksheet.freeze_panes(5, 1)  # Freeze after event info and headers
+
+    def _generate_additional_stats_content(self, writer: pd.ExcelWriter, event_info: Dict):
+        """Generate content for the additional statistics tab"""
+        workbook = writer.book
+        worksheet = workbook.add_worksheet('Nationality - Gym - Returns')
+        
+        # Add formats
+        title_format = workbook.add_format({
+            'bold': True, 
+            'font_size': 14, 
+            'align': 'left'
+        })
+        header_format = workbook.add_format({
+            'bold': True, 
+            'text_wrap': True, 
+            'valign': 'top', 
+            'border': 1, 
+            'align': 'center',
+            'bg_color': '#8093B3',
+            'font_color': '#FFFFFF'
+        })
+        section_format = workbook.add_format({
+            'bold': True, 
+            'font_size': 12, 
+            'border': 1, 
+            'align': 'left',
+            'bg_color': '#8093B3',
+            'font_color': '#FFFFFF'
+        })
+        data_format = workbook.add_format({
+            'align': 'left',
+            'border': 1
+        })
+        number_format = workbook.add_format({
+            'align': 'right',
+            'border': 1
+        })
+        
+        # Write event information
+        event_name = event_info.get('name', 'N/A')
+        worksheet.write(0, 0, f'Event: {event_name}', title_format)
+        
+        # Get data from DataProvider
+        data_provider = DataProvider(writer.db_manager)
+        
+        # Left side content (starts at column 0)
+        left_col = 0
+        current_row = 2
+
+        # 1. Returning Athletes Section (Left side)
+        worksheet.merge_range(current_row, left_col, current_row, left_col + 1, 'Returning Athletes Statistics', section_format)
+        current_row += 1
+        
+        returning_data = data_provider.get_returning_athletes_data()
+        worksheet.write(current_row, left_col, 'Category', header_format)
+        worksheet.write(current_row, left_col + 1, 'Count', header_format)
+        current_row += 1
+        
+        worksheet.write(current_row, left_col, 'Total returning athletes', data_format)
+        worksheet.write(current_row, left_col + 1, returning_data['returning_athletes'], number_format)
+        current_row += 1
+        
+        worksheet.write(current_row, left_col, 'Total returning athletes to city', data_format)
+        worksheet.write(current_row, left_col + 1, returning_data['returning_to_city'], number_format)
+        current_row += 2
+
+        # 2. Region of Residence Section (Left side)
+        worksheet.merge_range(current_row, left_col, current_row, left_col + 1, 'Region of Residence Distribution', section_format)
+        current_row += 1
+        
+        region_data = data_provider.get_region_of_residence_data()
+        if not region_data.empty:
+            worksheet.write(current_row, left_col, 'Region', header_format)
+            worksheet.write(current_row, left_col + 1, 'Count', header_format)
+            current_row += 1
+            
+            for _, row in region_data.iterrows():
+                worksheet.write(current_row, left_col, row['region'], data_format)
+                worksheet.write(current_row, left_col + 1, row['count'], number_format)
+                current_row += 1
+
+        # Right side content (starts at column 3)
+        right_col = 3
+        current_row = 2
+
+        # 3. Gym Affiliate Section (Right side)
+        worksheet.merge_range(current_row, right_col, current_row, right_col + 3, 'Gym Affiliate Statistics', section_format)
+        current_row += 1
+        
+        gym_data = data_provider.get_gym_affiliate_data()
+        
+        # Membership Status Summary
+        worksheet.write(current_row, right_col, 'Membership Status', header_format)
+        worksheet.write(current_row, right_col + 1, 'Count', header_format)
+        current_row += 1
+        
+        # Sort membership counts to ensure consistent order
+        membership_order = ["I'm a member", "I'm a member of another", "I'm not a member"]
+        for status in membership_order:
+            if status in gym_data['membership_counts']:
+                worksheet.write(current_row, right_col, status, data_format)
+                worksheet.write(current_row, right_col + 1, gym_data['membership_counts'][status], number_format)
+                current_row += 1
+        current_row += 2
+
+        # Process each membership type in separate tables
+        membership_types = [
+            ("I'm a member", "Membership for MEMBER"),
+            ("I'm a member of another", "Membership for MEMBER_OTHER"),
+            ("I'm not a member", "Membership for NOT_MEMBER")
+        ]
+
+        for membership_type, title in membership_types:
+            # Create section header
+            worksheet.merge_range(current_row, right_col, current_row, right_col + 3, title, section_format)
+            current_row += 1
+
+            # Headers
+            worksheet.write(current_row, right_col, 'Membership Type', header_format)
+            worksheet.write(current_row, right_col + 1, 'Gym', header_format)
+            worksheet.write(current_row, right_col + 2, 'Location', header_format)
+            worksheet.write(current_row, right_col + 3, 'Count', header_format)
+            current_row += 1
+
+            if membership_type == "I'm not a member":
+                # Single row for NOT_MEMBER
+                not_member_count = gym_data['membership_counts'].get(membership_type, 0)
+                if not_member_count > 0:
+                    worksheet.write(current_row, right_col, membership_type, data_format)
+                    worksheet.write(current_row, right_col + 1, 'N/A', data_format)
+                    worksheet.write(current_row, right_col + 2, 'N/A', data_format)
+                    worksheet.write(current_row, right_col + 3, not_member_count, number_format)
+                    current_row += 1
+            else:
+                # Filter and sort member details for this membership type
+                member_details = [d for d in gym_data['member_details'] 
+                                if d['membership_type'] == membership_type]
+                member_details.sort(key=lambda x: x['count'], reverse=True)
+                
+                for detail in member_details:
+                    worksheet.write(current_row, right_col, detail['membership_type'], data_format)
+                    worksheet.write(current_row, right_col + 1, detail['gym'], data_format)
+                    worksheet.write(current_row, right_col + 2, detail['location'], data_format)
+                    worksheet.write(current_row, right_col + 3, detail['count'], number_format)
+                    current_row += 1
+
+            current_row += 2  # Add space between tables
+
+        # Set column widths
+        # Left side
+        worksheet.set_column(left_col, left_col, 35)      # Region/Category
+        worksheet.set_column(left_col + 1, left_col + 1, 15)  # Count
+        
+        # Separator column
+        worksheet.set_column(2, 2, 2)  # Small gap between sections
+        
+        # Right side
+        worksheet.set_column(right_col, right_col, 35)    # Membership Type
+        worksheet.set_column(right_col + 1, right_col + 1, 25)  # Gym
+        worksheet.set_column(right_col + 2, right_col + 2, 25)  # Location
+        worksheet.set_column(right_col + 3, right_col + 3, 15)  # Count
 
 class Analytics:
     """Main analytics coordinator"""
