@@ -374,17 +374,18 @@ def create_event(session: sessionmaker, event_data: dict, schema: str) -> Event:
 class CustomFieldMapper:
     """Manages custom field mappings for different regions/schemas"""
     
-    def __init__(self, schema: str):
+    def __init__(self, schema: str, region: str):
         self.schema = schema
+        self.region = region
         self._field_mappings = self._load_field_mappings()
 
     def _load_field_mappings(self) -> Dict[str, str]:
         """
         Dynamically load all field mappings from environment variables
-        Format: EVENT_CONFIGS__{schema}__field_{database_column}={api_field_name}
+        Format: EVENT_CONFIGS__{region}__field_{database_column}={api_field_name}
         """
         mappings = {}
-        prefix = f'EVENT_CONFIGS__{self.schema}__field_'
+        prefix = f'EVENT_CONFIGS__{self.region}__field_'
         
         # Scan all environment variables for field mappings
         for key, value in os.environ.items():
@@ -392,8 +393,7 @@ class CustomFieldMapper:
                 # Convert environment key to database column name
                 db_column = key[len(prefix):].lower()
                 mappings[db_column] = value
-                
-        logger.debug(f"Loaded field mappings for schema {self.schema}: {mappings}")
+        
         return mappings
 
     def get_field_value(self, extra_fields: Dict[str, Any], db_column: str) -> Optional[Any]:
@@ -401,7 +401,8 @@ class CustomFieldMapper:
         api_field = self._field_mappings.get(db_column)
         if not api_field:
             return None
-        return extra_fields.get(api_field)
+        value = extra_fields.get(api_field)
+        return value
 
     def get_gym_affiliate(self, extra_fields: Dict[str, Any]) -> Optional[str]:
         """
@@ -427,14 +428,38 @@ class CustomFieldMapper:
         
         return None
 
+    def get_gym_affiliate_location(self, extra_fields: Dict[str, Any]) -> Optional[str]:
+        """
+        Determine gym affiliate location based on membership status
+        
+        Args:
+            extra_fields: Dictionary containing ticket extra fields
+            
+        Returns:
+            Resolved gym affiliate location value or None
+        """
+        # Get membership status
+        is_gym_affiliate_condition = self.get_field_value(extra_fields, 'is_gym_affiliate')
+        membership_status = GymMembershipStatus.parse(is_gym_affiliate_condition)
+        
+        if not membership_status:
+            return None
+            
+        if membership_status == GymMembershipStatus.MEMBER_OTHER:
+            return self.get_field_value(extra_fields, 'gym_affiliate_other_region_location')
+        elif membership_status == GymMembershipStatus.MEMBER:
+            return self.get_field_value(extra_fields, 'gym_affiliate_location')
+        
+        return None
+
 class TicketProcessor:
     """Efficient ticket processing with lookup caching and validation"""
     
-    def __init__(self, session, schema):
+    def __init__(self, session, schema, region):
         self.session = session
         self.schema = schema
         self.existing_tickets_cache = {}
-        self.field_mapper = CustomFieldMapper(schema)
+        self.field_mapper = CustomFieldMapper(schema, region)
     
     def get_existing_ticket(self, ticket_id: str) -> Optional[Ticket]:
         """Efficiently lookup ticket from cache or database"""
@@ -463,7 +488,7 @@ class TicketProcessor:
 
             ticket_name = ticket_data.get("ticketName")
             if not ticket_name:
-                logger.warning(f"Ticket name is missing for ticket ID {ticket_id}")
+                logger.debug(f"Ticket name is missing for ticket ID {ticket_id}")
                 return None
 
             # Get extra fields
@@ -472,8 +497,6 @@ class TicketProcessor:
             # Get membership status for logging
             is_gym_affiliate_condition = self.field_mapper.get_field_value(extra_fields, 'is_gym_affiliate')
             membership_status = GymMembershipStatus.parse(is_gym_affiliate_condition)
-            if membership_status:
-                logger.debug(f"Ticket {ticket_id} membership status: {membership_status.name}")
 
             # Prepare ticket values
             ticket_values = {
@@ -497,10 +520,13 @@ class TicketProcessor:
                 'gender': standardize_gender(extra_fields.get("gender")),
                 'birthday': extra_fields.get("birth_date"),
                 'age': calculate_age(extra_fields.get("birth_date")),
+                'nationality': extra_fields.get("nationality"),
                 'region_of_residence': extra_fields.get("region_of_residence"),
                 'is_gym_affiliate': is_gym_affiliate_condition,
                 'gym_affiliate': self.field_mapper.get_gym_affiliate(extra_fields),
-                'gym_affiliate_region_located': self.field_mapper.get_field_value(extra_fields, 'gym_affiliate_region_located')
+                'gym_affiliate_location': self.field_mapper.get_gym_affiliate_location(extra_fields),
+                'is_returning_athlete': normalize_yes_no(extra_fields.get("returning_athlete")),
+                'is_returning_athlete_to_city': normalize_yes_no(extra_fields.get("returning_athlete_city"))
             }
 
             # Update or create ticket
@@ -523,12 +549,12 @@ class TicketProcessor:
         """Clear the lookup cache"""
         self.existing_tickets_cache.clear()
 
-def process_batch(session, tickets: List, event_data: Dict, schema: str):
+def process_batch(session, tickets: List, event_data: Dict, schema: str, region: str):
     """Process batch of tickets using TicketProcessor"""
     processed = 0
     failed = 0
     
-    processor = TicketProcessor(session, schema)
+    processor = TicketProcessor(session, schema, region)
     
     for ticket in tickets:
         try:
@@ -549,7 +575,7 @@ class BatchProcessor:
         self.batch_size = batch_size
         self.max_workers = max_workers
 
-    def process_tickets(self, api: VivenuAPI, db_manager: DatabaseManager, event_data: Dict, schema: str) -> int:
+    def process_tickets(self, api: VivenuAPI, db_manager: DatabaseManager, event_data: Dict, schema: str, region: str) -> int:
         """Process tickets in optimized batches with parallel API requests"""
         first_batch = api.get_tickets(skip=0, limit=1)
         total_tickets = first_batch.get("total", 0)
@@ -580,7 +606,7 @@ class BatchProcessor:
                         if tickets:
                             # Process batch in its own transaction
                             with TransactionManager(db_manager) as session:
-                                processed = process_batch(session, tickets, event_data, schema)
+                                processed = process_batch(session, tickets, event_data, schema, region)
                                 processed_total += processed
                                 logger.info(
                                     f"Batch {batch_num + 1}/{total_batches} complete. "
@@ -607,7 +633,7 @@ class BatchProcessor:
                     return []  # Return empty list on failure
                 time.sleep(retry_delay * (attempt + 1))
 
-def ingest_data(token: str, event_id: str, schema: str, skip_fetch: bool = False, debug: bool = False):
+def ingest_data(token: str, event_id: str, schema: str, region: str, skip_fetch: bool = False, debug: bool = False):
     """Main ingestion function"""
     LogConfig.set_debug(debug)
     api = VivenuAPI(token)
@@ -642,7 +668,7 @@ def ingest_data(token: str, event_id: str, schema: str, skip_fetch: bool = False
 
         # Process tickets with optimized batching
         batch_processor = BatchProcessor(batch_size=1000, max_workers=5)
-        processed_count = batch_processor.process_tickets(api, db_manager, found_event_data, schema)
+        processed_count = batch_processor.process_tickets(api, db_manager, found_event_data, schema, region)
         
         if processed_count > 0:
             # Update summaries in final transaction
@@ -666,16 +692,41 @@ def get_event_configs():
             _, region, param = key.split("__", 2)
             if param in ["token", "event_id", "schema_name"]:
                 configs[region][param] = value
-    
+            configs[region]["region"] = region
+
     return [
         {
             "token": config["token"],
             "event_id": config["event_id"],
-            "schema": config["schema_name"]
+            "schema": config["schema_name"],
+            "region": config["region"]
         }
         for config in configs.values()
-        if all(k in config for k in ["token", "event_id", "schema_name"])
+        if all(k in config for k in ["token", "event_id", "schema_name", "region"])
     ]
+
+def normalize_yes_no(value: Optional[str]) -> Optional[bool]:
+    """Normalize Yes/No values to boolean, handling any language
+    
+    Args:
+        value: Input string that starts with Yes/No followed by optional translation
+        
+    Returns:
+        bool: True for strings starting with "Yes", False for strings starting with "No", 
+              None for invalid/empty values
+    """
+    if not value:
+        return None
+        
+    # Get first word (always English Yes/No)
+    first_word = str(value).split()[0].lower().strip()
+    
+    if first_word == 'yes':
+        return True
+    elif first_word == 'no':
+        return False
+    
+    return None
 
 if __name__ == "__main__":
     load_dotenv()
@@ -699,6 +750,7 @@ if __name__ == "__main__":
                 config["token"], 
                 config["event_id"], 
                 config["schema"], 
+                config["region"],
                 skip_fetch=args.skip_fetch,
                 debug=args.debug
             )

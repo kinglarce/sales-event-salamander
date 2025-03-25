@@ -53,10 +53,13 @@ class Ticket(Base):
     gender = Column(String)
     birthday = Column(String)
     age = Column(Integer)
+    nationality = Column(String)
     region_of_residence = Column(String)
     is_gym_affiliate = Column(String)
     gym_affiliate = Column(String)
-    gym_affiliate_region_located = Column(String)
+    gym_affiliate_location = Column(String)
+    is_returning_athlete = Column(Boolean)
+    is_returning_athlete_to_city = Column(Boolean)
 
 class TicketTypeSummary(Base):
     __tablename__ = "ticket_type_summary"
