@@ -55,8 +55,8 @@ class TicketEventDay(Enum):
 
 class GymMembershipStatus(Enum):
     """Standardized gym membership status"""
-    MEMBER = "I'm a member"
     MEMBER_OTHER = "I'm a member of another"
+    MEMBER = "I'm a member"
     NOT_MEMBER = "I'm not a member"
     
     @classmethod
@@ -414,17 +414,15 @@ class CustomFieldMapper:
             Resolved gym affiliate value or None
         """
         # Get membership status
-        membership_raw = self.get_field_value(extra_fields, 'is_gym_affiliate')
-        membership_status = GymMembershipStatus.parse(membership_raw)
+        is_gym_affiliate_condition = self.get_field_value(extra_fields, 'is_gym_affiliate')
+        membership_status = GymMembershipStatus.parse(is_gym_affiliate_condition)
         
         if not membership_status:
             return None
             
         if membership_status == GymMembershipStatus.MEMBER_OTHER:
-            print('hey : ', membership_raw, ' -- ', self.get_field_value(extra_fields, 'gym_affiliate_other_country'))
-            return self.get_field_value(extra_fields, 'gym_affiliate_other_country')
+            return self.get_field_value(extra_fields, 'gym_affiliate_other_region')
         elif membership_status == GymMembershipStatus.MEMBER:
-            print('hey : ', membership_raw, ' -- ', self.get_field_value(extra_fields, 'gym_affiliate'))
             return self.get_field_value(extra_fields, 'gym_affiliate')
         
         return None
@@ -472,8 +470,8 @@ class TicketProcessor:
             extra_fields = ticket_data.get("extraFields", {})
 
             # Get membership status for logging
-            membership_raw = self.field_mapper.get_field_value(extra_fields, 'is_gym_affiliate')
-            membership_status = GymMembershipStatus.parse(membership_raw)
+            is_gym_affiliate_condition = self.field_mapper.get_field_value(extra_fields, 'is_gym_affiliate')
+            membership_status = GymMembershipStatus.parse(is_gym_affiliate_condition)
             if membership_status:
                 logger.debug(f"Ticket {ticket_id} membership status: {membership_status.name}")
 
@@ -499,9 +497,10 @@ class TicketProcessor:
                 'gender': standardize_gender(extra_fields.get("gender")),
                 'birthday': extra_fields.get("birth_date"),
                 'age': calculate_age(extra_fields.get("birth_date")),
-                'region_of_residence': self.field_mapper.get_field_value(extra_fields, 'region_of_residence'),
-                'is_gym_affiliate': membership_raw,
-                'gym_affiliate': self.field_mapper.get_gym_affiliate(extra_fields)
+                'region_of_residence': extra_fields.get("region_of_residence"),
+                'is_gym_affiliate': is_gym_affiliate_condition,
+                'gym_affiliate': self.field_mapper.get_gym_affiliate(extra_fields),
+                'gym_affiliate_region_located': self.field_mapper.get_field_value(extra_fields, 'gym_affiliate_region_located')
             }
 
             # Update or create ticket

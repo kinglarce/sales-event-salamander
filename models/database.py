@@ -56,7 +56,6 @@ class Ticket(Base):
     region_of_residence = Column(String)
     is_gym_affiliate = Column(String)
     gym_affiliate = Column(String)
-    gym_affiliate_other_country = Column(String)
     gym_affiliate_region_located = Column(String)
 
 class TicketTypeSummary(Base):
