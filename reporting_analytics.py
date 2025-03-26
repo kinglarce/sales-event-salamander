@@ -151,11 +151,20 @@ class DataProvider:
         try:
             query = f"""
                 SELECT 
-                    region_of_residence,
+                    CASE 
+                        WHEN t.region_of_residence IN (
+                            SELECT code FROM {self.schema}.country_configs
+                        ) THEN (
+                            SELECT country 
+                            FROM {self.schema}.country_configs 
+                            WHERE code = t.region_of_residence
+                        )
+                        ELSE t.region_of_residence
+                    END as region,
                     COUNT(*) as count
-                FROM {self.schema}.tickets
-                WHERE region_of_residence IS NOT NULL
-                GROUP BY region_of_residence
+                FROM {self.schema}.tickets t
+                WHERE t.region_of_residence IS NOT NULL
+                GROUP BY t.region_of_residence
                 ORDER BY count DESC
             """
             results = self.db.execute_query(query)
