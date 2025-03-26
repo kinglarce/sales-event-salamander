@@ -167,23 +167,28 @@ class DataProvider:
     def get_gym_affiliate_data(self) -> Dict[str, Any]:
         """Get gym affiliate statistics"""
         try:
-            # Get membership status counts using exact GymMembershipStatus values
+            # First, get unique is_gym_affiliate values
+            unique_query = f"""
+                SELECT DISTINCT is_gym_affiliate 
+                FROM {self.schema}.tickets 
+                WHERE is_gym_affiliate IS NOT NULL
+            """
+            unique_results = self.db.execute_query(unique_query)
+            unique_values = [row[0] for row in unique_results]
+            logger.info(f"Found unique membership types: {unique_values}")
+            
+            # Get membership status counts
             membership_query = f"""
                 SELECT 
                     is_gym_affiliate as membership_status,
                     COUNT(*) as count
                 FROM {self.schema}.tickets
-                WHERE is_gym_affiliate IN ('I''m a member', 'I''m a member of another', 'I''m not a member')
+                WHERE is_gym_affiliate IS NOT NULL
                 GROUP BY is_gym_affiliate
-                ORDER BY 
-                    CASE 
-                        WHEN is_gym_affiliate = 'I''m a member' THEN 1
-                        WHEN is_gym_affiliate = 'I''m a member of another' THEN 2
-                        WHEN is_gym_affiliate = 'I''m not a member' THEN 3
-                    END
             """
             membership_results = self.db.execute_query(membership_query)
             membership_counts = {row[0]: row[1] for row in membership_results}
+            logger.info(f"Membership counts: {membership_counts}")
 
             # Get gym affiliate details for members
             member_details_query = f"""
@@ -193,17 +198,19 @@ class DataProvider:
                     COALESCE(gym_affiliate_location, 'N/A') as location,
                     COUNT(*) as count
                 FROM {self.schema}.tickets
-                WHERE is_gym_affiliate IN ('I''m a member', 'I''m a member of another')
+                WHERE is_gym_affiliate IS NOT NULL
                   AND gym_affiliate IS NOT NULL
                 GROUP BY 
                     is_gym_affiliate,
                     gym_affiliate,
                     gym_affiliate_location
-                ORDER BY is_gym_affiliate, count DESC
+                ORDER BY count DESC
             """
             member_details = self.db.execute_query(member_details_query)
+            logger.info(f"Found {len(member_details)} gym affiliate details")
             
             return {
+                'unique_values': unique_values,
                 'membership_counts': membership_counts,
                 'member_details': [
                     {
@@ -217,7 +224,7 @@ class DataProvider:
             }
         except Exception as e:
             logger.error(f"Error getting gym affiliate data: {e}")
-            return {'membership_counts': {}, 'member_details': []}
+            return {'unique_values': [], 'membership_counts': {}, 'member_details': []}
 
 class SlackService:
     """Handles Slack communication"""
@@ -678,7 +685,7 @@ class ExcelGenerator:
         current_row = 2
 
         # 3. Gym Affiliate Section (Right side)
-        worksheet.merge_range(current_row, right_col, current_row, right_col + 3, 'Gym Affiliate Statistics', section_format)
+        worksheet.merge_range(current_row, right_col, current_row, right_col + 1, 'Gym Affiliate Statistics', section_format)
         current_row += 1
         
         gym_data = data_provider.get_gym_affiliate_data()
@@ -688,24 +695,18 @@ class ExcelGenerator:
         worksheet.write(current_row, right_col + 1, 'Count', header_format)
         current_row += 1
         
-        # Sort membership counts to ensure consistent order
-        membership_order = ["I'm a member", "I'm a member of another", "I'm not a member"]
-        for status in membership_order:
-            if status in gym_data['membership_counts']:
-                worksheet.write(current_row, right_col, status, data_format)
-                worksheet.write(current_row, right_col + 1, gym_data['membership_counts'][status], number_format)
-                current_row += 1
+        # Write counts for each unique membership type
+        for membership_type in gym_data['unique_values']:
+            count = gym_data['membership_counts'].get(membership_type, 0)
+            worksheet.write(current_row, right_col, membership_type, data_format)
+            worksheet.write(current_row, right_col + 1, count, number_format)
+            current_row += 1
         current_row += 2
 
-        # Process each membership type in separate tables
-        membership_types = [
-            ("I'm a member", "Membership for MEMBER"),
-            ("I'm a member of another", "Membership for MEMBER_OTHER"),
-            ("I'm not a member", "Membership for NOT_MEMBER")
-        ]
-
-        for membership_type, title in membership_types:
+        # Process each unique membership type in separate tables
+        for membership_type in gym_data['unique_values']:
             # Create section header
+            title = f"Membership for {membership_type}"
             worksheet.merge_range(current_row, right_col, current_row, right_col + 3, title, section_format)
             current_row += 1
 
@@ -716,27 +717,26 @@ class ExcelGenerator:
             worksheet.write(current_row, right_col + 3, 'Count', header_format)
             current_row += 1
 
-            if membership_type == "I'm not a member":
-                # Single row for NOT_MEMBER
-                not_member_count = gym_data['membership_counts'].get(membership_type, 0)
-                if not_member_count > 0:
-                    worksheet.write(current_row, right_col, membership_type, data_format)
-                    worksheet.write(current_row, right_col + 1, 'N/A', data_format)
-                    worksheet.write(current_row, right_col + 2, 'N/A', data_format)
-                    worksheet.write(current_row, right_col + 3, not_member_count, number_format)
-                    current_row += 1
-            else:
-                # Filter and sort member details for this membership type
-                member_details = [d for d in gym_data['member_details'] 
-                                if d['membership_type'] == membership_type]
-                member_details.sort(key=lambda x: x['count'], reverse=True)
-                
+            # Filter and sort member details for this membership type
+            member_details = [d for d in gym_data['member_details'] 
+                            if d['membership_type'] == membership_type]
+            member_details.sort(key=lambda x: x['count'], reverse=True)
+            
+            if member_details:
                 for detail in member_details:
                     worksheet.write(current_row, right_col, detail['membership_type'], data_format)
                     worksheet.write(current_row, right_col + 1, detail['gym'], data_format)
                     worksheet.write(current_row, right_col + 2, detail['location'], data_format)
                     worksheet.write(current_row, right_col + 3, detail['count'], number_format)
                     current_row += 1
+            else:
+                # If no details, just show the total count
+                count = gym_data['membership_counts'].get(membership_type, 0)
+                worksheet.write(current_row, right_col, membership_type, data_format)
+                worksheet.write(current_row, right_col + 1, 'N/A', data_format)
+                worksheet.write(current_row, right_col + 2, 'N/A', data_format)
+                worksheet.write(current_row, right_col + 3, count, number_format)
+                current_row += 1
 
             current_row += 2  # Add space between tables
 
