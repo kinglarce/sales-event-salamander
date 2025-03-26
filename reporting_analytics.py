@@ -190,16 +190,15 @@ class DataProvider:
             membership_counts = {row[0]: row[1] for row in membership_results}
             logger.info(f"Membership counts: {membership_counts}")
 
-            # Get gym affiliate details for members
+            # Get gym affiliate details for members - modified to include NULL values
             member_details_query = f"""
                 SELECT 
                     is_gym_affiliate as membership_type,
-                    COALESCE(gym_affiliate, 'N/A') as gym,
-                    COALESCE(gym_affiliate_location, 'N/A') as location,
+                    COALESCE(gym_affiliate, 'Not Specified') as gym,
+                    COALESCE(gym_affiliate_location, 'Not Specified') as location,
                     COUNT(*) as count
                 FROM {self.schema}.tickets
                 WHERE is_gym_affiliate IS NOT NULL
-                  AND gym_affiliate IS NOT NULL
                 GROUP BY 
                     is_gym_affiliate,
                     gym_affiliate,
@@ -722,20 +721,12 @@ class ExcelGenerator:
                             if d['membership_type'] == membership_type]
             member_details.sort(key=lambda x: x['count'], reverse=True)
             
-            if member_details:
-                for detail in member_details:
-                    worksheet.write(current_row, right_col, detail['membership_type'], data_format)
-                    worksheet.write(current_row, right_col + 1, detail['gym'], data_format)
-                    worksheet.write(current_row, right_col + 2, detail['location'], data_format)
-                    worksheet.write(current_row, right_col + 3, detail['count'], number_format)
-                    current_row += 1
-            else:
-                # If no details, just show the total count
-                count = gym_data['membership_counts'].get(membership_type, 0)
-                worksheet.write(current_row, right_col, membership_type, data_format)
-                worksheet.write(current_row, right_col + 1, 'N/A', data_format)
-                worksheet.write(current_row, right_col + 2, 'N/A', data_format)
-                worksheet.write(current_row, right_col + 3, count, number_format)
+            # Always show the details, including "Not Specified" entries
+            for detail in member_details:
+                worksheet.write(current_row, right_col, detail['membership_type'], data_format)
+                worksheet.write(current_row, right_col + 1, detail['gym'], data_format)
+                worksheet.write(current_row, right_col + 2, detail['location'], data_format)
+                worksheet.write(current_row, right_col + 3, detail['count'], number_format)
                 current_row += 1
 
             current_row += 2  # Add space between tables

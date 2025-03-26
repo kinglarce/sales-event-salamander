@@ -13,6 +13,7 @@ from enum import Enum
 from collections import defaultdict
 import os
 from dotenv import load_dotenv
+import re
 
 # Create logs directory if it doesn't exist
 if not os.path.exists('logs'):
@@ -404,29 +405,58 @@ class CustomFieldMapper:
         value = extra_fields.get(api_field)
         return value
 
+    def normalize_value(self, value: Optional[str]) -> Optional[str]:
+        """
+        Normalize string values by trimming whitespace, removing special characters,
+        and handling invalid/empty/NA variations.
+        
+        Args:
+            value: Input string to normalize
+            
+        Returns:
+            Normalized string or None if value is empty/invalid/NA
+        """
+        if not value:
+            return None
+        
+        # Remove special characters and extra spaces
+        normalized = re.sub(r'[^a-zA-Z0-9\s]', '', str(value))
+        normalized = ' '.join(normalized.split())  # Handle multiple spaces
+        normalized = normalized.strip()
+        
+        # Return None for empty, single character, or invalid values
+        if (not normalized or                          # Empty string
+            len(normalized) <= 1 or                    # Single character
+            normalized.lower() in [                    # Invalid values
+                'na', 'n/a', 'none', 'no', 
+                'nil', 'other', ''
+            ]):
+            return None
+        
+        return normalized
+
     def get_gym_affiliate(self, extra_fields: Dict[str, Any]) -> Optional[str]:
         """
-        Determine gym affiliate based on membership status and region
+        Determine gym affiliate based on membership status and region.
         
         Args:
             extra_fields: Dictionary containing ticket extra fields
             
         Returns:
-            Resolved gym affiliate value or None
+            Normalized gym affiliate value or None
         """
-        # Get membership status
-        is_gym_affiliate_condition = self.get_field_value(extra_fields, 'is_gym_affiliate')
+        is_gym_affiliate_condition = extra_fields.get("hyrox_training_clubs")
         membership_status = GymMembershipStatus.parse(is_gym_affiliate_condition)
         
         if not membership_status:
             return None
-            
-        if membership_status == GymMembershipStatus.MEMBER_OTHER:
-            return self.get_field_value(extra_fields, 'gym_affiliate_other_region')
-        elif membership_status == GymMembershipStatus.MEMBER:
-            return self.get_field_value(extra_fields, 'gym_affiliate')
         
-        return None
+        if membership_status == GymMembershipStatus.MEMBER_OTHER:
+            return self.normalize_value(extra_fields.get('hyrox_training_club_other_territory_name'))
+        elif membership_status == GymMembershipStatus.MEMBER:
+            return self.normalize_value(extra_fields.get('local_territory_training_club'))
+        
+        return self.normalize_value(extra_fields.get('gym_club_community'))
 
     def get_gym_affiliate_location(self, extra_fields: Dict[str, Any]) -> Optional[str]:
         """
@@ -439,16 +469,16 @@ class CustomFieldMapper:
             Resolved gym affiliate location value or None
         """
         # Get membership status
-        is_gym_affiliate_condition = self.get_field_value(extra_fields, 'is_gym_affiliate')
+        is_gym_affiliate_condition = extra_fields.get("hyrox_training_clubs")
         membership_status = GymMembershipStatus.parse(is_gym_affiliate_condition)
         
         if not membership_status:
             return None
             
         if membership_status == GymMembershipStatus.MEMBER_OTHER:
-            return self.get_field_value(extra_fields, 'gym_affiliate_other_region_location')
+            return extra_fields.get('region_training')
         elif membership_status == GymMembershipStatus.MEMBER:
-            return self.get_field_value(extra_fields, 'gym_affiliate_location')
+            return extra_fields.get('local_territory_training')
         
         return None
 
@@ -494,10 +524,6 @@ class TicketProcessor:
             # Get extra fields
             extra_fields = ticket_data.get("extraFields", {})
 
-            # Get membership status for logging
-            is_gym_affiliate_condition = self.field_mapper.get_field_value(extra_fields, 'is_gym_affiliate')
-            membership_status = GymMembershipStatus.parse(is_gym_affiliate_condition)
-
             # Prepare ticket values
             ticket_values = {
                 'id': ticket_id,
@@ -522,7 +548,7 @@ class TicketProcessor:
                 'age': calculate_age(extra_fields.get("birth_date")),
                 'nationality': extra_fields.get("nationality"),
                 'region_of_residence': extra_fields.get("region_of_residence"),
-                'is_gym_affiliate': is_gym_affiliate_condition,
+                'is_gym_affiliate': extra_fields.get("hyrox_training_clubs"),
                 'gym_affiliate': self.field_mapper.get_gym_affiliate(extra_fields),
                 'gym_affiliate_location': self.field_mapper.get_gym_affiliate_location(extra_fields),
                 'is_returning_athlete': normalize_yes_no(extra_fields.get("returning_athlete")),
