@@ -167,28 +167,37 @@ class DataProvider:
     def get_gym_affiliate_data(self) -> Dict[str, Any]:
         """Get gym affiliate statistics"""
         try:
-            # Get all gym affiliate details with pattern-based ordering
+            # Get all gym affiliate details with pattern-based ordering and country names
             member_details_query = f"""
                 SELECT 
-                    is_gym_affiliate as membership_type,
-                    COALESCE(gym_affiliate, 'Not Specified') as gym,
-                    COALESCE(gym_affiliate_location, 'Not Specified') as location,
+                    t.is_gym_affiliate as membership_type,
+                    COALESCE(t.gym_affiliate, 'Not Specified') as gym,
+                    CASE 
+                        WHEN t.gym_affiliate_location IN (
+                            SELECT code FROM {self.schema}.country_configs
+                        ) THEN (
+                            SELECT country 
+                            FROM {self.schema}.country_configs 
+                            WHERE code = t.gym_affiliate_location
+                        )
+                        ELSE COALESCE(t.gym_affiliate_location, 'Not Specified')
+                    END as location,
                     COUNT(*) as count
-                FROM {self.schema}.tickets
-                WHERE is_gym_affiliate IS NOT NULL
+                FROM {self.schema}.tickets t
+                WHERE t.is_gym_affiliate IS NOT NULL
                 GROUP BY 
-                    is_gym_affiliate,
-                    gym_affiliate,
-                    gym_affiliate_location
+                    t.is_gym_affiliate,
+                    t.gym_affiliate,
+                    t.gym_affiliate_location
                 ORDER BY 
                     CASE 
-                        WHEN is_gym_affiliate LIKE 'I''m a member of%' AND 
-                             is_gym_affiliate NOT LIKE 'I''m a member of another%' THEN 1
-                        WHEN is_gym_affiliate LIKE 'I''m a member of another%' THEN 2
-                        WHEN is_gym_affiliate LIKE 'I''m not a member%' THEN 3
+                        WHEN t.is_gym_affiliate LIKE 'I''m a member of%' AND 
+                             t.is_gym_affiliate NOT LIKE 'I''m a member of another%' THEN 1
+                        WHEN t.is_gym_affiliate LIKE 'I''m a member of another%' THEN 2
+                        WHEN t.is_gym_affiliate LIKE 'I''m not a member%' THEN 3
                         ELSE 4
                     END,
-                    is_gym_affiliate,
+                    t.is_gym_affiliate,
                     count DESC
             """
             member_details = self.db.execute_query(member_details_query)
