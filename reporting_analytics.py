@@ -167,30 +167,7 @@ class DataProvider:
     def get_gym_affiliate_data(self) -> Dict[str, Any]:
         """Get gym affiliate statistics"""
         try:
-            # First, get unique is_gym_affiliate values
-            unique_query = f"""
-                SELECT DISTINCT is_gym_affiliate 
-                FROM {self.schema}.tickets 
-                WHERE is_gym_affiliate IS NOT NULL
-            """
-            unique_results = self.db.execute_query(unique_query)
-            unique_values = [row[0] for row in unique_results]
-            logger.info(f"Found unique membership types: {unique_values}")
-            
-            # Get membership status counts
-            membership_query = f"""
-                SELECT 
-                    is_gym_affiliate as membership_status,
-                    COUNT(*) as count
-                FROM {self.schema}.tickets
-                WHERE is_gym_affiliate IS NOT NULL
-                GROUP BY is_gym_affiliate
-            """
-            membership_results = self.db.execute_query(membership_query)
-            membership_counts = {row[0]: row[1] for row in membership_results}
-            logger.info(f"Membership counts: {membership_counts}")
-
-            # Get gym affiliate details for members - modified to include NULL values
+            # Get all gym affiliate details with pattern-based ordering
             member_details_query = f"""
                 SELECT 
                     is_gym_affiliate as membership_type,
@@ -203,23 +180,53 @@ class DataProvider:
                     is_gym_affiliate,
                     gym_affiliate,
                     gym_affiliate_location
-                ORDER BY count DESC
+                ORDER BY 
+                    CASE 
+                        WHEN is_gym_affiliate LIKE 'I''m a member of%' AND 
+                             is_gym_affiliate NOT LIKE 'I''m a member of another%' THEN 1
+                        WHEN is_gym_affiliate LIKE 'I''m a member of another%' THEN 2
+                        WHEN is_gym_affiliate LIKE 'I''m not a member%' THEN 3
+                        ELSE 4
+                    END,
+                    is_gym_affiliate,
+                    count DESC
             """
             member_details = self.db.execute_query(member_details_query)
             logger.info(f"Found {len(member_details)} gym affiliate details")
             
+            # Process the results to get unique values and membership counts
+            membership_counts = {}
+            seen_types = set()
+            ordered_unique_values = []
+            
+            # Convert results to the required format and calculate totals
+            member_details_list = []
+            for row in member_details:
+                membership_type = row[0]
+                
+                # Add to unique values list if not seen before
+                if membership_type not in seen_types:
+                    ordered_unique_values.append(membership_type)
+                    seen_types.add(membership_type)
+                
+                # Add to membership counts
+                membership_counts[membership_type] = membership_counts.get(membership_type, 0) + row[3]
+                
+                # Add to member details list
+                member_details_list.append({
+                    'membership_type': membership_type,
+                    'gym': row[1],
+                    'location': row[2],
+                    'count': row[3]
+                })
+            
+            logger.info(f"Found unique membership types (ordered): {ordered_unique_values}")
+            logger.info(f"Membership counts: {membership_counts}")
+            
             return {
-                'unique_values': unique_values,
+                'unique_values': ordered_unique_values,
                 'membership_counts': membership_counts,
-                'member_details': [
-                    {
-                        'membership_type': row[0],
-                        'gym': row[1],
-                        'location': row[2],
-                        'count': row[3]
-                    }
-                    for row in member_details
-                ]
+                'member_details': member_details_list
             }
         except Exception as e:
             logger.error(f"Error getting gym affiliate data: {e}")
