@@ -150,8 +150,11 @@ final_groups AS (
         FLOOR((NULLIF(d1.age, 0) + NULLIF(d2.age, 0))::float / 2) as group_avg_age,
         'DOUBLES' as category_type,
         CASE 
-            WHEN d1.age IS NULL OR d2.age IS NULL OR  -- Check for missing ages
-                 d2.ticket_name IS NULL               -- Check for missing partner
+            WHEN d1.age IS NULL OR d1.age = 0 OR     -- Check for missing/invalid main age
+                 d2.age IS NULL OR d2.age = 0 OR     -- Check for missing/invalid member age
+                 d2.ticket_name IS NULL OR            -- Check for missing partner
+                 d1.transaction_id IS NULL OR TRIM(d1.transaction_id) = '' OR  -- Check for missing/empty transaction_id
+                 d2.transaction_id IS NULL OR TRIM(d2.transaction_id) = ''
             THEN true 
             ELSE false 
         END as is_incomplete
@@ -176,10 +179,11 @@ final_groups AS (
         team_avg_age as group_avg_age,
         'RELAY' as category_type,
         CASE 
-            WHEN member_count < 3 OR                  -- Check for missing members
-                 main_age IS NULL OR                  -- Check for missing main age
-                 array_length(array_remove(member_age_array, NULL), 1) < 3 OR  -- Check for missing member ages
-                 member_tickets IS NULL               -- Check for missing member tickets
+            WHEN member_count != 3 OR                 -- Must have exactly 3 members
+                 main_age IS NULL OR main_age = 0 OR  -- Check for missing/invalid main age
+                 array_length(array_remove(array_remove(member_age_array, NULL), 0), 1) != 3 OR  -- Check for missing/invalid member ages
+                 member_tickets IS NULL OR            -- Check for missing member tickets
+                 transaction_id IS NULL OR TRIM(transaction_id) = ''  -- Check for missing/empty transaction_id
             THEN true 
             ELSE false 
         END as is_incomplete
@@ -198,7 +202,8 @@ final_groups AS (
         age as group_avg_age,
         'SINGLE' as category_type,
         CASE 
-            WHEN age IS NULL OR age = 0  -- Check for missing or invalid age
+            WHEN age IS NULL OR age = 0 OR  -- Check for missing or invalid age
+                 transaction_id IS NULL OR TRIM(transaction_id) = ''  -- Check for missing/empty transaction_id
             THEN true 
             ELSE false 
         END as is_incomplete
@@ -227,18 +232,19 @@ paired_entries AS (
     SELECT 
         transaction_id,
         ticket_group,
+        category_type,
         group_avg_age as pair_avg_age,
         is_incomplete,
         expected_count
     FROM group_validation
-    WHERE group_avg_age IS NOT NULL
-)
+),
 
 -- Group and validate pairs with improved counting
 transaction_status AS (
     SELECT 
         ticket_group,
         transaction_id,
+        category_type,
         expected_count as required_members,
         pair_avg_age,
         CASE 
@@ -284,7 +290,6 @@ SELECT
     END as count,
     COALESCE(total_count, 0) as total,
     incomplete_transactions,
-    complete_transactions,
-    validation_errors
+    complete_transactions
 FROM group_counts
 WHERE ticket_group = :ticket_group;
