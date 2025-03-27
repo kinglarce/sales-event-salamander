@@ -730,7 +730,7 @@ class ExcelGenerator:
         # Process each unique membership type in separate tables
         for membership_type in gym_data['unique_values']:
             # Create section header
-            title = f"Membership for {membership_type}"
+            title = f"Training Club Membership - {membership_type}"
             worksheet.merge_range(current_row, right_col, current_row, right_col + 3, title, section_format)
             current_row += 1
 
