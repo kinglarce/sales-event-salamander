@@ -90,40 +90,51 @@ doubles_pairs AS (
 
 -- Handle relay grouping with proper team separation
 relay_teams AS (
+    WITH numbered_tickets AS (
+        SELECT 
+            transaction_id,
+            ticket_group,
+            ticket_name,
+            age,
+            ticket_type,
+            -- Number the MAIN tickets separately
+            ROW_NUMBER() OVER (
+                PARTITION BY transaction_id, ticket_group, ticket_type 
+                ORDER BY ticket_name
+            ) as ticket_seq,
+            -- Create a continuous sequence for MEMBER tickets
+            CASE WHEN ticket_type = 'MEMBER' THEN
+                ROW_NUMBER() OVER (
+                    PARTITION BY transaction_id, ticket_group, ticket_type 
+                    ORDER BY ticket_name
+                )
+            END as member_seq
+        FROM categorized_tickets
+        WHERE category_type = 'RELAY'
+    )
     SELECT 
         t1.transaction_id,
         t1.ticket_group,
         t1.ticket_name as main_ticket,
         t1.age as main_age,
-        -- Get the next 3 team members for this main ticket
-        STRING_AGG(t2.ticket_name, ',' ORDER BY t2.ticket_name) as member_tickets,
-        STRING_AGG(CAST(t2.age AS TEXT), ',' ORDER BY t2.ticket_name) as member_ages,
-        ARRAY_AGG(t2.age ORDER BY t2.ticket_name) as member_age_array,
+        STRING_AGG(t2.ticket_name, ',' ORDER BY t2.member_seq) as member_tickets,
+        STRING_AGG(CAST(t2.age AS TEXT), ',' ORDER BY t2.member_seq) as member_ages,
+        ARRAY_AGG(t2.age ORDER BY t2.member_seq) as member_age_array,
         COUNT(t2.*) as member_count,
-        -- Calculate average including main ticket and members
         FLOOR((t1.age + SUM(t2.age))::float / 4) as team_avg_age
-    FROM categorized_tickets t1
-    LEFT JOIN LATERAL (
-        SELECT ticket_name, age
-        FROM categorized_tickets t2
-        WHERE t2.transaction_id = t1.transaction_id
-        AND t2.ticket_group = t1.ticket_group
+    FROM numbered_tickets t1
+    LEFT JOIN numbered_tickets t2 ON 
+        t1.transaction_id = t2.transaction_id 
+        AND t1.ticket_group = t2.ticket_group
         AND t2.ticket_type = 'MEMBER'
-        AND NOT EXISTS (
-            SELECT 1 
-            FROM categorized_tickets t3
-            WHERE t3.transaction_id = t1.transaction_id
-            AND t3.ticket_group = t1.ticket_group
-            AND t3.ticket_type = 'MEMBER'
-            AND t3.ticket_name < t2.ticket_name
-            AND t3.age IS NOT NULL
-            LIMIT 3
-        )
-        LIMIT 3
-    ) t2 ON true
-    WHERE t1.category_type = 'RELAY'
-    AND t1.ticket_type = 'MAIN'
-    GROUP BY t1.transaction_id, t1.ticket_group, t1.ticket_name, t1.age
+        AND t2.member_seq BETWEEN ((t1.ticket_seq - 1) * 3) + 1 AND (t1.ticket_seq * 3)
+    WHERE t1.ticket_type = 'MAIN'
+    GROUP BY 
+        t1.transaction_id,
+        t1.ticket_group,
+        t1.ticket_name,
+        t1.age,
+        t1.ticket_seq
 ),
 
 -- Combine results based on category type
@@ -211,46 +222,17 @@ group_validation AS (
     FROM final_groups
 ),
 
--- Add validation checks CTE before paired_entries
-validation_checks AS (
+-- Then continue with paired_entries directly
+paired_entries AS (
     SELECT 
         transaction_id,
         ticket_group,
-        COUNT(*) as total_members,
-        COUNT(CASE WHEN ticket_type = 'MAIN' THEN 1 END) as main_count,
-        COUNT(CASE WHEN ticket_type = 'MEMBER' THEN 1 END) as member_count,
-        CASE 
-            WHEN ticket_group LIKE '%RELAY%' AND 
-                (COUNT(*) < 4 OR COUNT(*) > 4) THEN 'Invalid relay team size'
-            WHEN ticket_group LIKE '%DOUBLES%' AND 
-                (COUNT(*) < 2 OR COUNT(*) > 2) THEN 'Invalid doubles team size'
-            WHEN COUNT(CASE WHEN ticket_type = 'MAIN' THEN 1 END) = 0 THEN 'Missing main ticket'
-            WHEN COUNT(CASE WHEN age IS NULL THEN 1 END) > 0 THEN 'Missing age data'
-            ELSE NULL
-        END as validation_error
-    FROM categorized_tickets
-    GROUP BY transaction_id, ticket_group
-),
-
--- Then continue with paired_entries and the rest...
-paired_entries AS (
-    SELECT 
-        g.transaction_id,
-        g.ticket_group,
-        g.group_avg_age as pair_avg_age,
-        CASE 
-            WHEN g.is_incomplete THEN true
-            WHEN v.validation_error IS NOT NULL THEN true
-            ELSE false
-        END as is_incomplete,
-        v.validation_error,
-        g.expected_count
-    FROM group_validation g
-    LEFT JOIN validation_checks v ON 
-        g.transaction_id = v.transaction_id AND 
-        g.ticket_group = v.ticket_group
-    WHERE g.group_avg_age IS NOT NULL
-),
+        group_avg_age as pair_avg_age,
+        is_incomplete,
+        expected_count
+    FROM group_validation
+    WHERE group_avg_age IS NOT NULL
+)
 
 -- Group and validate pairs with improved counting
 transaction_status AS (
@@ -263,8 +245,7 @@ transaction_status AS (
             WHEN pair_avg_age >= :min_age AND pair_avg_age <= :max_age THEN true
             ELSE false
         END as in_age_range,
-        is_incomplete,
-        validation_error
+        is_incomplete
     FROM paired_entries
 ),
 
@@ -288,8 +269,7 @@ group_counts AS (
         SUM(required_members) as total_count,
         -- Additional metrics for verification
         COUNT(DISTINCT CASE WHEN is_incomplete THEN transaction_id END) as incomplete_transactions,
-        COUNT(DISTINCT CASE WHEN NOT is_incomplete AND in_age_range THEN transaction_id END) as complete_transactions,
-        STRING_AGG(DISTINCT validation_error, '; ' ORDER BY validation_error) FILTER (WHERE validation_error IS NOT NULL) as validation_errors
+        COUNT(DISTINCT CASE WHEN NOT is_incomplete AND in_age_range THEN transaction_id END) as complete_transactions
     FROM transaction_status
     GROUP BY ticket_group
 )
