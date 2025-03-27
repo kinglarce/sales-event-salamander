@@ -725,7 +725,7 @@ class ExcelGenerator:
             worksheet.write(current_row, right_col, membership_type, data_format)
             worksheet.write(current_row, right_col + 1, count, number_format)
             current_row += 1
-        current_row += 2
+        current_row += 1
 
         # Process each unique membership type in separate tables
         for membership_type in gym_data['unique_values']:
@@ -754,7 +754,7 @@ class ExcelGenerator:
                 worksheet.write(current_row, right_col + 3, detail['count'], number_format)
                 current_row += 1
 
-            current_row += 2  # Add space between tables
+            current_row += 1  # Add space between tables
 
         # Set column widths
         # Left side
