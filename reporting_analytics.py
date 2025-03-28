@@ -1269,7 +1269,7 @@ class ExcelGenerator:
         current_row = 2
         
         # 1. Sportograf Summary
-        worksheet.merge_range(current_row, right_col, current_row, right_col + 1, 'Sportograf Package Summary(Only Atheletes)', section_format)
+        worksheet.merge_range(current_row, right_col, current_row, right_col + 1, 'Sportograf Package Summary', section_format)
         current_row += 1
         
         worksheet.write(current_row, right_col, 'Package Type', header_format)
