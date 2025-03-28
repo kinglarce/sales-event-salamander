@@ -271,52 +271,72 @@ class DataProvider:
             team_query = f"""
                 WITH main_tickets AS (
                     SELECT 
-                        tt.ticket_name as main_ticket_name,
-                        tt.total_count as main_expected_count,
-                        COUNT(t.id) as main_actual_count,
-                        tt.ticket_type_id as main_ticket_type_id
+                        tt.ticket_name,
+                        tt.total_count as main_count,
+                        tt.ticket_category,
+                        CASE 
+                            WHEN LOWER(tt.ticket_name) LIKE '% | %' THEN SPLIT_PART(LOWER(tt.ticket_name), ' | ', 1)
+                            ELSE LOWER(tt.ticket_name)
+                        END as base_name
                     FROM {self.schema}.ticket_type_summary tt
-                    LEFT JOIN {self.schema}.tickets t ON t.ticket_type_id = tt.ticket_type_id
-                    WHERE tt.ticket_name NOT LIKE '%ATHLETE 2%'
-                      AND tt.ticket_name NOT LIKE '%TEAM MEMBER%'
-                      AND (tt.ticket_name LIKE '%DOUBLES%' OR tt.ticket_name LIKE '%RELAY%')
-                    GROUP BY tt.ticket_name, tt.total_count, tt.ticket_type_id
-                ),
+                    WHERE tt.ticket_category IN ('double', 'relay')
+                    AND NOT (
+                            tt.ticket_name LIKE '%ATHLETE 2%'
+                            OR tt.ticket_name LIKE '%ATHLETE2%'
+                            OR tt.ticket_name LIKE '%TEAM MEMBER%'
+                            OR tt.ticket_name LIKE '%MEMBER%'
+                        )
+                    ),
                 member_tickets AS (
                     SELECT 
-                        tt.ticket_name as member_ticket_name,
-                        tt.total_count as member_expected_count,
-                        COUNT(t.id) as member_actual_count,
+                        member_ticket_name,
+                        member_count,
                         CASE 
-                            WHEN tt.ticket_name LIKE '%ATHLETE 2%' THEN REPLACE(tt.ticket_name, ' (ATHLETE 2)', '')
-                            WHEN tt.ticket_name LIKE '%TEAM MEMBER%' THEN REPLACE(tt.ticket_name, ' (TEAM MEMBER)', '')
-                        END as main_ticket_name
-                    FROM {self.schema}.ticket_type_summary tt
-                    LEFT JOIN {self.schema}.tickets t ON t.ticket_type_id = tt.ticket_type_id
-                    WHERE tt.ticket_name LIKE '%ATHLETE 2%'
-                       OR tt.ticket_name LIKE '%TEAM MEMBER%'
-                    GROUP BY tt.ticket_name, tt.total_count
+                            WHEN LOWER(member_ticket_name) LIKE '% | %' THEN SPLIT_PART(LOWER(member_ticket_name), ' | ', 1)
+                            ELSE LOWER(member_ticket_name)
+                        END as base_name
+                    FROM (
+                            SELECT 
+                                CASE
+                                    WHEN tt.ticket_name LIKE '%ATHLETE 2%' OR tt.ticket_name LIKE '%ATHLETE2%' THEN 
+                                        SPLIT_PART(tt.ticket_name, ' ATHLETE', 1)
+                                    WHEN tt.ticket_name LIKE '%TEAM MEMBER%' THEN 
+                                        SPLIT_PART(tt.ticket_name, ' TEAM MEMBER', 1)
+                                    WHEN tt.ticket_name LIKE '%MEMBER%' THEN 
+                                        SPLIT_PART(tt.ticket_name, ' MEMBER', 1)
+                                END as member_ticket_name,
+                                tt.total_count as member_count
+                            FROM {self.schema}.ticket_type_summary tt
+                            WHERE tt.ticket_name LIKE '%ATHLETE 2%'
+                                OR tt.ticket_name LIKE '%ATHLETE2%'
+                                OR tt.ticket_name LIKE '%TEAM MEMBER%'
+                                OR tt.ticket_name LIKE '%MEMBER%'
+                        )
                 )
                 SELECT 
-                    m.main_ticket_name,
-                    m.main_actual_count,
-                    m.main_expected_count,
-                    t.member_ticket_name,
-                    t.member_actual_count,
-                    t.member_expected_count
+                m.ticket_name as main_ticket_name,
+                m.main_count,
+                COALESCE(t.member_count, 0) as member_count,
+                m.ticket_category,
+                CASE 
+                    WHEN m.ticket_category = 'relay' AND COALESCE(t.member_count, 0) = m.main_count * 3 THEN 'OK'
+                    WHEN m.ticket_category = 'double' AND COALESCE(t.member_count, 0) = m.main_count THEN 'OK'
+                    ELSE 'MISMATCH'
+                END as status
                 FROM main_tickets m
-                JOIN member_tickets t ON t.main_ticket_name = m.main_ticket_name
-                ORDER BY m.main_ticket_name
+                LEFT JOIN member_tickets t ON t.base_name = m.base_name
+                ORDER BY 
+                m.ticket_category,
+                m.ticket_name
             """
             team_results = self.db.execute_query(team_query)
             team_counts = [
                 {
                     'main_ticket_name': row[0],
-                    'main_actual_count': row[1],
-                    'main_expected_count': row[2],
-                    'member_ticket_name': row[3],
-                    'member_actual_count': row[4],
-                    'member_expected_count': row[5]
+                    'main_count': row[1],
+                    'member_count': row[2],
+                    'ticket_category': row[3],
+                    'status': row[4]
                 }
                 for row in team_results
             ]
@@ -1159,40 +1179,34 @@ class ExcelGenerator:
         current_row += 2
         
         # 2. Team Member Count Verification
-        worksheet.merge_range(current_row, left_col, current_row, 5, 'Team Member Count Verification', section_format)
+        worksheet.merge_range(current_row, left_col, current_row, 4, 'Team Member Count Verification', section_format)
         current_row += 1
         
         # Headers
         worksheet.write(current_row, left_col, 'Main Ticket', header_format)
         worksheet.write(current_row, left_col + 1, 'Main Count', header_format)
-        worksheet.write(current_row, left_col + 2, 'Member Ticket', header_format)
-        worksheet.write(current_row, left_col + 3, 'Member Count', header_format)
-        worksheet.write(current_row, left_col + 4, 'Expected', header_format)
-        worksheet.write(current_row, left_col + 5, 'Status', header_format)
+        worksheet.write(current_row, left_col + 2, 'Member Count', header_format)
+        worksheet.write(current_row, left_col + 3, 'Category', header_format)
+        worksheet.write(current_row, left_col + 4, 'Status', header_format)
         current_row += 1
         
         for team_count in ticket_status_data['team_counts']:
             worksheet.write(current_row, left_col, team_count['main_ticket_name'], data_format)
-            worksheet.write(current_row, left_col + 1, team_count['main_actual_count'], number_format)
-            worksheet.write(current_row, left_col + 2, team_count['member_ticket_name'], data_format)
-            worksheet.write(current_row, left_col + 3, team_count['member_actual_count'], number_format)
-            worksheet.write(current_row, left_col + 4, team_count['member_expected_count'], number_format)
+            worksheet.write(current_row, left_col + 1, team_count['main_count'], number_format)
+            worksheet.write(current_row, left_col + 2, team_count['member_count'], number_format)
+            worksheet.write(current_row, left_col + 3, team_count['ticket_category'].upper(), data_format)
             
-            # Check if counts match based on ticket type
-            is_relay = 'RELAY' in team_count['main_ticket_name']
-            expected_ratio = 3 if is_relay else 1
-            expected_member_count = team_count['main_actual_count'] * expected_ratio
-            
-            if (team_count['member_actual_count'] != expected_member_count):
-                status = 'MISMATCH'
-                format_to_use = warning_format
-            else:
-                status = 'OK'
-                format_to_use = data_format
-                
-            worksheet.write(current_row, left_col + 5, status, format_to_use)
+            # Status formatting
+            format_to_use = warning_format if team_count['status'] != 'OK' else data_format
+            worksheet.write(current_row, left_col + 4, team_count['status'], format_to_use)
             current_row += 1
-            
+        
+        # Set column widths
+        worksheet.set_column(left_col, left_col, 40)      # Main ticket name
+        worksheet.set_column(left_col + 1, left_col + 2, 15)  # Count columns
+        worksheet.set_column(left_col + 3, left_col + 3, 12)  # Category
+        worksheet.set_column(left_col + 4, left_col + 4, 12)  # Status
+        
         current_row += 2
         
         # 3. Gender Mismatch Report
@@ -1321,12 +1335,10 @@ class ExcelGenerator:
         
         # Set column widths
         # Left side
-        worksheet.set_column(left_col, left_col, 40)  # Main ticket name/Ticket Type
-        worksheet.set_column(left_col + 1, left_col + 1, 15)  # Main count/Barcode
-        worksheet.set_column(left_col + 2, left_col + 2, 40)  # Member ticket name/Category
-        worksheet.set_column(left_col + 3, left_col + 3, 15)  # Member count/Gender
-        worksheet.set_column(left_col + 4, left_col + 4, 12)  # Expected
-        worksheet.set_column(left_col + 5, left_col + 5, 12)  # Status
+        worksheet.set_column(left_col, left_col, 40)  # Main ticket name
+        worksheet.set_column(left_col + 1, left_col + 2, 15)  # Count columns
+        worksheet.set_column(left_col + 3, left_col + 3, 12)  # Category
+        worksheet.set_column(left_col + 4, left_col + 4, 12)  # Status
         
         # Separator column
         worksheet.set_column(8, 8, 2)  # Small gap between left and right sections
