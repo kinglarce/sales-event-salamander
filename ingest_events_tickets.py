@@ -217,13 +217,26 @@ def calculate_age(birth_date) -> Union[int, None]:
     return None
 
 def standardize_gender(gender: str) -> Union[str, None]:
-    """Standardize gender input to 'Male' or 'Female'."""
-    if gender:
-        gender_lower = gender.lower()
-        if gender_lower in ['male', 'men']:
-            return 'Male'
-        elif gender_lower in ['female', 'woman', 'women']:
-            return 'Female'
+    """Standardize gender input to 'Male' or 'Female'.
+    
+    Handles:
+    1. Single gender strings: 'male', 'men', 'female', 'woman', 'women'
+    2. Multi-language gender strings where English appears first:
+       - "Female เพศหญิง" (Thai)
+       - "Male 남성" (Korean)
+       - "Female 女性" (Japanese/Chinese)
+    """
+    if not gender:
+        return None
+        
+    # Get first word and normalize
+    first_word = str(gender).split()[0].lower().strip()
+    
+    if first_word in ['male', 'men']:
+        return 'Male'
+    elif first_word in ['female', 'woman', 'women']:
+        return 'Female'
+    
     return None
 
 def parse_datetime(dt_str):
