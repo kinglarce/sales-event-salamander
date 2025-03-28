@@ -1265,7 +1265,7 @@ class ExcelGenerator:
                     current_row += 1
         
         # Right side content
-        right_col = 8  # Updated to account for new column
+        right_col = 9  # Added one column space for separation
         current_row = 2
         
         # 1. Sportograf Summary
@@ -1327,6 +1327,9 @@ class ExcelGenerator:
         worksheet.set_column(left_col + 3, left_col + 3, 15)  # Member count/Gender
         worksheet.set_column(left_col + 4, left_col + 4, 12)  # Expected
         worksheet.set_column(left_col + 5, left_col + 5, 12)  # Status
+        
+        # Separator column
+        worksheet.set_column(8, 8, 2)  # Small gap between left and right sections
         
         # Right side
         worksheet.set_column(right_col, right_col, 15)  # Barcode
