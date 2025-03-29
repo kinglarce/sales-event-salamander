@@ -56,51 +56,28 @@ class DataProvider:
         self.db = db_manager
         self.schema = db_manager.schema
         
+    def _read_sql_file(self, filename: str) -> str:
+        """Read SQL file and replace schema placeholder"""
+        try:
+            file_path = os.path.join('sql', filename)
+            if not os.path.exists(file_path):
+                logger.error(f"SQL file not found: {file_path}")
+                raise FileNotFoundError(f"SQL file not found: {file_path}")
+            
+            with open(file_path, 'r') as f:
+                sql_content = f.read().strip()
+                if not sql_content:
+                    logger.error(f"SQL file is empty: {file_path}")
+                    raise ValueError(f"SQL file is empty: {file_path}")
+                
+                return sql_content.replace('{SCHEMA}', self.schema)
+        except Exception as e:
+            logger.error(f"Error reading SQL file {filename}: {str(e)}")
+            raise
+    
     def get_age_group_data(self) -> pd.DataFrame:
         try:
-            query = f"""
-                SELECT 
-                    ticket_group,
-                    age_range,
-                    count
-                FROM {self.schema}.ticket_age_groups
-                ORDER BY 
-                    CASE 
-                        WHEN ticket_group = 'HYROX MEN' THEN 1
-                        WHEN ticket_group = 'HYROX WOMEN' THEN 2
-                        WHEN ticket_group = 'HYROX PRO MEN' THEN 3
-                        WHEN ticket_group = 'HYROX PRO WOMEN' THEN 4
-                        WHEN ticket_group = 'HYROX ADAPTIVE MEN' THEN 5
-                        WHEN ticket_group = 'HYROX ADAPTIVE WOMEN' THEN 6
-                        WHEN ticket_group = 'HYROX DOUBLES MEN' THEN 10
-                        WHEN ticket_group = 'HYROX DOUBLES WOMEN' THEN 11
-                        WHEN ticket_group = 'HYROX DOUBLES MIXED' THEN 12
-                        WHEN ticket_group = 'HYROX PRO DOUBLES MEN' THEN 13
-                        WHEN ticket_group = 'HYROX PRO DOUBLES WOMEN' THEN 14
-                        WHEN ticket_group = 'HYROX MENS RELAY' THEN 20
-                        WHEN ticket_group = 'HYROX WOMENS RELAY' THEN 21
-                        WHEN ticket_group = 'HYROX MIXED RELAY' THEN 22
-                        WHEN ticket_group = 'HYROX MENS CORPORATE RELAY' THEN 23
-                        WHEN ticket_group = 'HYROX WOMENS CORPORATE RELAY' THEN 24
-                        WHEN ticket_group = 'HYROX MIXED CORPORATE RELAY' THEN 25
-                        ELSE 99
-                    END,
-                    CASE 
-                        WHEN age_range = 'U24' THEN 1
-                        WHEN age_range = '25-29' THEN 2
-                        WHEN age_range = '30-34' THEN 3
-                        WHEN age_range = '35-39' THEN 4
-                        WHEN age_range = '40-44' THEN 5
-                        WHEN age_range = '45-49' THEN 6
-                        WHEN age_range = '50-54' THEN 7
-                        WHEN age_range = '55-59' THEN 8
-                        WHEN age_range = '60-64' THEN 9
-                        WHEN age_range = '65-69' THEN 10
-                        WHEN age_range = '70+' THEN 11
-                        WHEN age_range = 'Total' THEN 12
-                        ELSE 99
-                    END
-            """
+            query = self._read_sql_file('get_age_group_data.sql')
             results = self.db.execute_query(query)
             return pd.DataFrame(results, columns=['ticket_group', 'age_range', 'count'])
         except Exception as e:
@@ -109,11 +86,7 @@ class DataProvider:
 
     def get_event_info(self) -> Dict:
         try:
-            query = f"""
-                SELECT name, start_date, end_date
-                FROM {self.schema}.events
-                LIMIT 1
-            """
+            query = self._read_sql_file('get_event_info.sql')
             result = self.db.execute_query(query)
             if result:
                 return {
@@ -127,14 +100,8 @@ class DataProvider:
             return {}
 
     def get_returning_athletes_data(self) -> Dict[str, int]:
-        """Get counts of returning athletes"""
         try:
-            query = f"""
-                SELECT 
-                    SUM(CASE WHEN is_returning_athlete = true THEN 1 ELSE 0 END) as returning_athletes,
-                    SUM(CASE WHEN is_returning_athlete_to_city = true THEN 1 ELSE 0 END) as returning_to_city
-                FROM {self.schema}.tickets
-            """
+            query = self._read_sql_file('get_returning_athletes.sql')
             result = self.db.execute_query(query)
             if result:
                 return {
@@ -147,26 +114,8 @@ class DataProvider:
             return {'returning_athletes': 0, 'returning_to_city': 0}
 
     def get_region_of_residence_data(self) -> pd.DataFrame:
-        """Get region of residence distribution"""
         try:
-            query = f"""
-                SELECT 
-                    CASE 
-                        WHEN t.region_of_residence IN (
-                            SELECT code FROM {self.schema}.country_configs
-                        ) THEN (
-                            SELECT country 
-                            FROM {self.schema}.country_configs 
-                            WHERE code = t.region_of_residence
-                        )
-                        ELSE t.region_of_residence
-                    END as region,
-                    COUNT(*) as count
-                FROM {self.schema}.tickets t
-                WHERE t.region_of_residence IS NOT NULL
-                GROUP BY t.region_of_residence
-                ORDER BY count DESC
-            """
+            query = self._read_sql_file('get_region_of_residence.sql')
             results = self.db.execute_query(query)
             return pd.DataFrame(results, columns=['region', 'count'])
         except Exception as e:
@@ -174,72 +123,32 @@ class DataProvider:
             return pd.DataFrame()
 
     def get_gym_affiliate_data(self) -> Dict[str, Any]:
-        """Get gym affiliate statistics"""
         try:
-            # Get all gym affiliate details with pattern-based ordering and country names
-            member_details_query = f"""
-                SELECT 
-                    t.is_gym_affiliate as membership_type,
-                    COALESCE(t.gym_affiliate, 'Not Specified') as gym,
-                    CASE 
-                        WHEN t.gym_affiliate_location IN (
-                            SELECT code FROM {self.schema}.country_configs
-                        ) THEN (
-                            SELECT country 
-                            FROM {self.schema}.country_configs 
-                            WHERE code = t.gym_affiliate_location
-                        )
-                        ELSE COALESCE(t.gym_affiliate_location, 'Not Specified')
-                    END as location,
-                    COUNT(*) as count
-                FROM {self.schema}.tickets t
-                WHERE t.is_gym_affiliate IS NOT NULL
-                GROUP BY 
-                    t.is_gym_affiliate,
-                    t.gym_affiliate,
-                    t.gym_affiliate_location
-                ORDER BY 
-                    CASE 
-                        WHEN t.is_gym_affiliate LIKE 'I''m a member of%' AND 
-                             t.is_gym_affiliate NOT LIKE 'I''m a member of another%' THEN 1
-                        WHEN t.is_gym_affiliate LIKE 'I''m a member of another%' THEN 2
-                        WHEN t.is_gym_affiliate LIKE 'I''m not a member%' THEN 3
-                        ELSE 4
-                    END,
-                    t.is_gym_affiliate,
-                    count DESC
-            """
-            member_details = self.db.execute_query(member_details_query)
+            query = self._read_sql_file('get_gym_affiliate_details.sql')
+            member_details = self.db.execute_query(query)
             logger.info(f"Found {len(member_details)} gym affiliate details")
             
             # Process the results to get unique values and membership counts
             membership_counts = {}
             seen_types = set()
             ordered_unique_values = []
-            
-            # Convert results to the required format and calculate totals
             member_details_list = []
+            
             for row in member_details:
                 membership_type = row[0]
                 
-                # Add to unique values list if not seen before
                 if membership_type not in seen_types:
                     ordered_unique_values.append(membership_type)
                     seen_types.add(membership_type)
                 
-                # Add to membership counts
                 membership_counts[membership_type] = membership_counts.get(membership_type, 0) + row[3]
                 
-                # Add to member details list
                 member_details_list.append({
                     'membership_type': membership_type,
                     'gym': row[1],
                     'location': row[2],
                     'count': row[3]
                 })
-            
-            logger.info(f"Found unique membership types (ordered): {ordered_unique_values}")
-            logger.info(f"Membership counts: {membership_counts}")
             
             return {
                 'unique_values': ordered_unique_values,
@@ -251,85 +160,16 @@ class DataProvider:
             return {'unique_values': [], 'membership_counts': {}, 'member_details': []}
 
     def get_ticket_status_data(self) -> Dict[str, Any]:
-        """Get ticket status data including status counts, team member counts, gender mismatches, and sportograf data"""
         try:
-            # 1. Get ticket status counts (excluding spectator and extra categories)
-            status_query = f"""
-                SELECT 
-                    t.status,
-                    COUNT(*) as count
-                FROM {self.schema}.tickets t
-                JOIN {self.schema}.ticket_type_summary tt ON t.ticket_type_id = tt.ticket_type_id
-                WHERE tt.ticket_category NOT IN ('spectator', 'extra')
-                GROUP BY t.status
-                ORDER BY t.status
-            """
+            # 1. Get ticket status counts
+            status_query = self._read_sql_file('get_ticket_status.sql')
             status_results = self.db.execute_query(status_query)
             status_counts = {row[0]: row[1] for row in status_results}
             
-            # 2. Get team member counts for doubles and relays with main ticket info
-            team_query = f"""
-                WITH main_tickets AS (
-                    SELECT 
-                        tt.ticket_name,
-                        tt.total_count as main_count,
-                        tt.ticket_category,
-                        CASE 
-                            WHEN LOWER(tt.ticket_name) LIKE '% | %' THEN SPLIT_PART(LOWER(tt.ticket_name), ' | ', 1)
-                            ELSE LOWER(tt.ticket_name)
-                        END as base_name
-                    FROM {self.schema}.ticket_type_summary tt
-                    WHERE tt.ticket_category IN ('double', 'relay')
-                    AND NOT (
-                            tt.ticket_name LIKE '%ATHLETE 2%'
-                            OR tt.ticket_name LIKE '%ATHLETE2%'
-                            OR tt.ticket_name LIKE '%TEAM MEMBER%'
-                            OR tt.ticket_name LIKE '%MEMBER%'
-                        )
-                    ),
-                member_tickets AS (
-                    SELECT 
-                        member_ticket_name,
-                        member_count,
-                        CASE 
-                            WHEN LOWER(member_ticket_name) LIKE '% | %' THEN SPLIT_PART(LOWER(member_ticket_name), ' | ', 1)
-                            ELSE LOWER(member_ticket_name)
-                        END as base_name
-                    FROM (
-                            SELECT 
-                                CASE
-                                    WHEN tt.ticket_name LIKE '%ATHLETE 2%' OR tt.ticket_name LIKE '%ATHLETE2%' THEN 
-                                        SPLIT_PART(tt.ticket_name, ' ATHLETE', 1)
-                                    WHEN tt.ticket_name LIKE '%TEAM MEMBER%' THEN 
-                                        SPLIT_PART(tt.ticket_name, ' TEAM MEMBER', 1)
-                                    WHEN tt.ticket_name LIKE '%MEMBER%' THEN 
-                                        SPLIT_PART(tt.ticket_name, ' MEMBER', 1)
-                                END as member_ticket_name,
-                                tt.total_count as member_count
-                            FROM {self.schema}.ticket_type_summary tt
-                            WHERE tt.ticket_name LIKE '%ATHLETE 2%'
-                                OR tt.ticket_name LIKE '%ATHLETE2%'
-                                OR tt.ticket_name LIKE '%TEAM MEMBER%'
-                                OR tt.ticket_name LIKE '%MEMBER%'
-                        )
-                )
-                SELECT 
-                m.ticket_name as main_ticket_name,
-                m.main_count,
-                COALESCE(t.member_count, 0) as member_count,
-                m.ticket_category,
-                CASE 
-                    WHEN m.ticket_category = 'relay' AND COALESCE(t.member_count, 0) = m.main_count * 3 THEN 'OK'
-                    WHEN m.ticket_category = 'double' AND COALESCE(t.member_count, 0) = m.main_count THEN 'OK'
-                    ELSE 'MISMATCH'
-                END as status
-                FROM main_tickets m
-                LEFT JOIN member_tickets t ON t.base_name = m.base_name
-                ORDER BY 
-                m.ticket_category,
-                m.ticket_name
-            """
+            # 2. Get team member counts
+            team_query = self._read_sql_file('get_team_member_counts.sql')
             team_results = self.db.execute_query(team_query)
+            print('hey result : ', team_results)
             team_counts = [
                 {
                     'main_ticket_name': row[0],
@@ -341,45 +181,8 @@ class DataProvider:
                 for row in team_results
             ]
             
-            # 3. Get gender mismatches (excluding mixed categories)
-            gender_query = f"""
-                WITH gender_mismatch_base AS (
-                    SELECT 
-                        t.ticket_name,
-                        t.gender,
-                        COUNT(*) as count
-                    FROM {self.schema}.tickets t
-                    JOIN {self.schema}.ticket_type_summary tt ON t.ticket_type_id = tt.ticket_type_id
-                    WHERE (
-                        (t.ticket_name LIKE '%WOMEN%' AND t.gender = 'Male')
-                        OR (t.ticket_name LIKE '%MEN%' AND NOT t.ticket_name LIKE '%WOMEN%' AND t.gender = 'Female')
-                    )
-                    AND NOT t.ticket_name LIKE '%MIXED%'
-                    GROUP BY t.ticket_name, t.gender
-                ),
-                gender_mismatch_details AS (
-                    SELECT 
-                        t.ticket_name,
-                        t.gender,
-                        t.barcode,
-                        t.ticket_type_id,
-                        t.category_name
-                    FROM {self.schema}.tickets t
-                    JOIN gender_mismatch_base g ON t.ticket_name = g.ticket_name AND t.gender = g.gender
-                )
-                SELECT 
-                    b.ticket_name,
-                    b.gender,
-                    b.count,
-                    json_agg(json_build_object(
-                        'barcode', d.barcode,
-                        'ticket_type_id', d.ticket_type_id,
-                        'category_name', d.category_name
-                    )) as details
-                FROM gender_mismatch_base b
-                JOIN gender_mismatch_details d ON b.ticket_name = d.ticket_name AND b.gender = d.gender
-                GROUP BY b.ticket_name, b.gender, b.count
-            """
+            # 3. Get gender mismatches
+            gender_query = self._read_sql_file('get_gender_mismatches.sql')
             gender_results = self.db.execute_query(gender_query)
             gender_mismatches = [
                 {
@@ -391,122 +194,8 @@ class DataProvider:
                 for row in gender_results
             ]
             
-            # 4. Get mixed pairing mismatches with optimized query
-            mixed_query = f"""
-                WITH mixed_pairs AS (
-                    SELECT 
-                        t.transaction_id,
-                        t.ticket_name,
-                        t.barcode,
-                        t.gender,
-                        t.category_name,
-                        CASE 
-                            WHEN t.ticket_name LIKE '%ATHLETE 2%' OR t.ticket_name LIKE '%TEAM MEMBER%' 
-                            THEN 'MEMBER' 
-                            ELSE 'MAIN' 
-                        END as ticket_type,
-                        -- Number tickets within their type (MAIN/MEMBER) for each transaction
-                        ROW_NUMBER() OVER (
-                            PARTITION BY t.transaction_id, 
-                                CASE 
-                                    WHEN t.ticket_name LIKE '%ATHLETE 2%' OR t.ticket_name LIKE '%TEAM MEMBER%' 
-                                    THEN 'MEMBER' 
-                                    ELSE 'MAIN' 
-                                END
-                            ORDER BY t.ticket_name
-                        ) as pair_number
-                    FROM {self.schema}.tickets t
-                    WHERE t.ticket_name LIKE '%MIXED%'
-                ),
-                paired_tickets AS (
-                    SELECT 
-                        m.transaction_id,
-                        m.ticket_name,  -- Keep original ticket_name
-                        m.ticket_type,  -- Keep ticket_type separate
-                        m.barcode as main_barcode,
-                        m.gender as main_gender,
-                        m.category_name as main_category,
-                        p.barcode as partner_barcode,
-                        p.gender as partner_gender,
-                        p.category_name as partner_category
-                    FROM mixed_pairs m
-                    LEFT JOIN mixed_pairs p ON 
-                        m.transaction_id = p.transaction_id AND
-                        m.pair_number = p.pair_number AND
-                        m.ticket_type = 'MAIN' AND 
-                        p.ticket_type = 'MEMBER'
-                    WHERE m.ticket_type = 'MAIN'
-                ),
-                invalid_pairs AS (
-                    SELECT 
-                        pt.*,
-                        CASE
-                            WHEN pt.ticket_name LIKE '%MIXED RELAY%' 
-                            THEN (
-                                SELECT COUNT(*) 
-                                FROM mixed_pairs mp 
-                                WHERE mp.transaction_id = pt.transaction_id
-                                AND mp.ticket_type = 'MEMBER'
-                            ) != 3
-                            WHEN pt.ticket_name LIKE '%MIXED DOUBLES%' 
-                            THEN (
-                                SELECT COUNT(*) 
-                                FROM mixed_pairs mp 
-                                WHERE mp.transaction_id = pt.transaction_id
-                                AND mp.ticket_type = 'MEMBER'
-                            ) != 1
-                            ELSE false
-                        END as has_wrong_member_count,
-                        CASE
-                            WHEN pt.ticket_name LIKE '%MIXED RELAY%' 
-                            THEN (
-                                SELECT COUNT(*) 
-                                FROM mixed_pairs mp 
-                                WHERE mp.transaction_id = pt.transaction_id
-                                AND mp.gender = 'Male'
-                            ) != 2 OR
-                                (
-                                SELECT COUNT(*) 
-                                FROM mixed_pairs mp 
-                                WHERE mp.transaction_id = pt.transaction_id
-                                AND mp.gender = 'Female'
-                            ) != 2
-                            WHEN pt.ticket_name LIKE '%MIXED DOUBLES%' 
-                            THEN (
-                                SELECT COUNT(*) 
-                                FROM mixed_pairs mp 
-                                WHERE mp.transaction_id = pt.transaction_id
-                                AND mp.gender = 'Male'
-                            ) != 1 OR
-                                (
-                                SELECT COUNT(*) 
-                                FROM mixed_pairs mp 
-                                WHERE mp.transaction_id = pt.transaction_id
-                                AND mp.gender = 'Female'
-                            ) != 1
-                            ELSE false
-                        END as has_wrong_gender_ratio
-                    FROM paired_tickets pt
-                    WHERE pt.ticket_name LIKE '%MIXED%'
-                )
-                SELECT 
-                    ticket_name,
-                    COUNT(*) as invalid_count,
-                    json_agg(json_build_object(
-                        'transaction_id', transaction_id,
-                        'main_barcode', main_barcode,
-                        'main_gender', main_gender,
-                        'main_category', main_category,
-                        'partner_barcode', partner_barcode,
-                        'partner_gender', partner_gender,
-                        'partner_category', partner_category,
-                        'has_wrong_member_count', has_wrong_member_count,
-                        'has_wrong_gender_ratio', has_wrong_gender_ratio
-                    )) as details
-                FROM invalid_pairs
-                WHERE has_wrong_member_count OR has_wrong_gender_ratio
-                GROUP BY ticket_name
-            """
+            # 4. Get mixed pairing mismatches
+            mixed_query = self._read_sql_file('get_mixed_mismatches.sql')
             mixed_results = self.db.execute_query(mixed_query)
             mixed_mismatches = [
                 {
@@ -518,29 +207,7 @@ class DataProvider:
             ]
             
             # 5. Get age restricted athletes
-            age_query = f"""
-                WITH age_restricted_athletes AS (
-                    SELECT 
-                        CASE 
-                            WHEN t.age <= 16 THEN 'under_16'
-                            WHEN t.age >= 17 AND t.age <= 18 THEN '17_to_18'
-                        END as age_group,
-                        json_agg(json_build_object(
-                            'barcode', t.barcode,
-                            'ticket_name', t.ticket_name,
-                            'ticket_type_id', t.ticket_type_id,
-                            'category_name', t.category_name,
-                            'age', t.age
-                        ) ORDER BY t.age) as athletes
-                    FROM {self.schema}.tickets t
-                    JOIN {self.schema}.ticket_type_summary tt ON t.ticket_type_id = tt.ticket_type_id
-                    WHERE t.age <= 18
-                      AND tt.ticket_category NOT IN ('spectator', 'extra')
-                    GROUP BY age_group
-                )
-                SELECT age_group, athletes
-                FROM age_restricted_athletes
-            """
+            age_query = self._read_sql_file('get_age_restricted.sql')
             age_results = self.db.execute_query(age_query)
             age_restricted = {
                 'under_16': [],
@@ -551,14 +218,7 @@ class DataProvider:
                     age_restricted[row[0]] = row[1]
             
             # 6. Get sportograf data
-            sportograf_query = f"""
-                SELECT 
-                    tt.ticket_name,
-                    tt.total_count
-                FROM {self.schema}.ticket_type_summary tt
-                WHERE tt.ticket_name LIKE '%Sportograf%'
-                ORDER BY tt.ticket_name
-            """
+            sportograf_query = self._read_sql_file('get_sportograf.sql')
             sportograf_results = self.db.execute_query(sportograf_query)
             sportograf_data = [
                 {
