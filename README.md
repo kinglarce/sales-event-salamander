@@ -85,6 +85,8 @@ EVENT_CONFIGS__region2__start_wave=40
 EVENT_CONFIGS__region2__price_tier=L2
 EVENT_CONFIGS__region2__REGISTRATION_CHANNEL=region2-channel
 EVENT_CONFIGS__region2__REPORTING_CHANNEL=region2-channel
+EVENT_CONFIGS__region2__summary_breakdown_day=true
+EVENT_CONFIGS__region2__field_gender=custom_local_gender_identified
 ```
 
 ## Installation & Usage
@@ -126,9 +128,6 @@ docker exec -it vivenu-app python scripts/run_ingest.py
 
 # Run for Reporting Registration Data to Slack
 docker exec -it vivenu-app python ticket_analytics.py
-
-# Run for Reporting Age Group Data to Slack
-docker exec -it vivenu-app python reporting_analytics.py --slack
 
 # Run for Reporting Excel data and sending to Slack
 docker exec -it vivenu-app python reporting_analytics.py --slack --excel
