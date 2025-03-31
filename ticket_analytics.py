@@ -143,11 +143,12 @@ class TicketDataProvider:
             sql_summary_detailed_by_day = 'sql/get_detailed_summary_with_day_report.sql'
             sql_summary = 'sql/get_detailed_summary_report.sql'
             is_config_breakdown_exist =  os.getenv(f'EVENT_CONFIGS__{self.region}__summary_breakdown_day', 'false').strip().lower() in ('true', '1')
+            is_config_exclude_adaptive_sunday =  os.getenv(f'EVENT_CONFIGS__{self.region}__exclude_adaptive_sunday', 'false').strip().lower() in ('true', '1')
             sql_file = sql_summary_detailed_by_day if is_config_breakdown_exist else sql_summary
             
             # Read and format SQL file
             with open(sql_file, 'r') as file:
-                sql = file.read().format(SCHEMA=self.schema)
+                sql = file.read().format(SCHEMA=self.schema, EXCLUDE_ADAPTIVE_SUNDAY=is_config_exclude_adaptive_sunday)
 
             # Execute query
             results = self.db.execute_query(sql)
