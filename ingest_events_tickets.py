@@ -1,47 +1,218 @@
 import logging
-import requests
+import os
+import re
+import time
 import asyncio
-import httpx  # Import httpx library
 from datetime import datetime
+from enum import Enum
+from math import ceil
+from dataclasses import dataclass
+from typing import Dict, Set, List, Tuple, Optional, Union, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Third party imports
+import requests
+import httpx
+from dotenv import load_dotenv
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine, text, func, inspect
+
+# Local imports
 from models.database import Base, Event, Ticket, TicketTypeSummary, SummaryReport
-import time
-from math import ceil
-from typing import Dict, Set, List, Tuple, Optional, Union, Any
-from dataclasses import dataclass
-from enum import Enum
-import os
-from dotenv import load_dotenv
-import re
 
 # Create logs directory if it doesn't exist
 if not os.path.exists('logs'):
     os.makedirs('logs')
 
+class Config:
+    """
+    Application configuration management with secure handling of secrets.
+    
+    This class centralizes configuration settings from environment variables,
+    provides validation, and offers methods to access configuration data.
+    """
+    
+    def __init__(self):
+        """Initialize configuration with defaults and environment variables."""
+        # Load environment variables if not already loaded
+        load_dotenv()
+        
+        # API Configuration
+        self.api_base_url = os.getenv('EVENT_API_BASE_URL', '')
+        self.api_token = os.getenv('EVENT_API_TOKEN', '')
+        
+        # Database Configuration
+        self.db_host = os.getenv('POSTGRES_HOST', 'localhost')
+        self.db_port = int(os.getenv('POSTGRES_PORT', '5432'))
+        self.db_name = os.getenv('POSTGRES_DB', '')
+        self.db_user = os.getenv('POSTGRES_USER', '')
+        self.db_password = os.getenv('POSTGRES_PASSWORD', '')
+        
+        # Application Configuration
+        self.debug_mode = os.getenv('DEBUG', 'false').lower() == 'true'
+        self.batch_size = int(os.getenv('BATCH_SIZE', '1000'))
+        self.max_retries = int(os.getenv('MAX_RETRIES', '3'))
+        self.retry_delay = int(os.getenv('RETRY_DELAY', '5'))
+        self.enable_file_logging = os.getenv('ENABLE_FILE_LOGGING', 'true').lower() == 'true'
+        self.enable_growth_analysis = os.getenv('ENABLE_GROWTH_ANALYSIS', 'false').lower() == 'true'
+        
+    def validate(self):
+        """Validate critical configuration settings."""
+        missing = []
+        
+        if not self.api_base_url:
+            missing.append('EVENT_API_BASE_URL')
+        if not self.api_token:
+            missing.append('EVENT_API_TOKEN')
+        if not self.db_name:
+            missing.append('POSTGRES_DB')
+        if not self.db_user:
+            missing.append('POSTGRES_USER')
+            
+        if missing:
+            raise ValueError(f"Missing required configuration: {', '.join(missing)}")
+            
+    def get_db_uri(self) -> str:
+        """
+        Get SQLAlchemy database URI with proper escaping of special characters.
+        
+        Returns:
+            str: Database connection URI
+        """
+        # Escape special characters in password
+        password = self.db_password.replace('%', '%25').replace(':', '%3A').replace('@', '%40')
+        
+        return f"postgresql://{self.db_user}:{password}@{self.db_host}:{self.db_port}/{self.db_name}"
+        
+    def is_production(self) -> bool:
+        """
+        Check if the application is running in production mode.
+        
+        Returns:
+            bool: True if in production mode, False otherwise
+        """
+        return os.getenv('ENVIRONMENT', 'development').lower() == 'production'
+        
+    def get_log_level(self) -> int:
+        """
+        Get the appropriate log level based on debug mode.
+        
+        Returns:
+            int: Logging level constant
+        """
+        return logging.DEBUG if self.debug_mode else logging.INFO
+        
+    @classmethod
+    def get_event_configs(cls):
+        """
+        Get all event configurations from environment variables.
+        
+        Returns:
+            List[Dict]: List of configuration dictionaries
+        """
+        from collections import defaultdict
+        
+        configs = defaultdict(dict)
+        for key, value in os.environ.items():
+            if key.startswith("EVENT_CONFIGS__"):
+                _, region, param = key.split("__", 2)
+                if param in ["token", "event_id", "schema_name"]:
+                    configs[region][param] = value
+                configs[region]["region"] = region
+
+        return [
+            {
+                "token": config["token"],
+                "event_id": config["event_id"],
+                "schema": config["schema_name"],
+                "region": config["region"]
+            }
+            for config in configs.values()
+            if all(k in config for k in ["token", "event_id", "schema_name", "region"])
+        ]
+
+class LogConfig:
+    """
+    Configuration and management for application logging.
+    
+    This class handles setting up logging with console and file handlers,
+    and provides methods to dynamically change logging levels.
+    """
+    
+    def __init__(self, config: Config = None):
+        """
+        Initialize logging configuration.
+        
+        Args:
+            config: Application configuration
+        """
+        self.config = config or Config()
+        self.logger = self._setup_logging()
+        
+    def _setup_logging(self) -> logging.Logger:
+        """
+        Set up logging with console and optional file handlers.
+        
+        Returns:
+            logging.Logger: Configured logger instance
+        """
+        # Create logs directory if it doesn't exist
+        os.makedirs('logs', exist_ok=True)
+        
+        # Get the main logger
+        logger = logging.getLogger(__name__)
+        logger.setLevel(self.config.get_log_level())
+        
+        # Clear any existing handlers
+        if logger.hasHandlers():
+            logger.handlers.clear()
+        
+        # Create console handler
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(self.config.get_log_level())
+        
+        # Create formatter and add it to the handlers
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        console_handler.setFormatter(formatter)
+        
+        # Add the console handler to the logger
+        logger.addHandler(console_handler)
+        
+        # Check if file logging is enabled
+        if self.config.enable_file_logging:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            log_filename = f'logs/ingest_{timestamp}.log'
+            file_handler = logging.FileHandler(log_filename)
+            file_handler.setLevel(logging.DEBUG)  # Always debug level for file logs
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
+            
+        return logger
+        
+    def set_debug(self, enabled: bool):
+        """
+        Enable or disable debug logging.
+        
+        Args:
+            enabled: True to enable debug logging, False to revert to default level
+        """
+        level = logging.DEBUG if enabled else logging.INFO
+        self.logger.setLevel(level)
+        
+        # Update console handler level
+        for handler in self.logger.handlers:
+            if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+                handler.setLevel(level)
+                
+        self.debug_enabled = enabled
+        logger.info(f"Debug logging {'enabled' if enabled else 'disabled'}")
+
+# Initialize configuration
+app_config = Config()
+
 # Set up logging
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-
-# Create console handler
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
-
-# Create formatter and add it to the handlers
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-console_handler.setFormatter(formatter)
-
-# Add the console handler to the logger
-logger.addHandler(console_handler)
-
-# Check if file logging is enabled
-if os.getenv('ENABLE_FILE_LOGGING', 'true').strip().lower() in ('true', '1'):
-    log_filename = f'logs/ingest_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
-    file_handler = logging.FileHandler(log_filename)
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
+log_config = LogConfig(app_config)
+logger = log_config.logger
 
 class TicketCategory(Enum):
     SINGLE = "single"
@@ -73,72 +244,163 @@ class GymMembershipStatus(Enum):
                 return status
         return None
 
-class VivenuAPI:
+class BaseVivenuAPI:
+    """Base class for Vivenu API implementations"""
+    
     def __init__(self, token: str):
+        """
+        Initialize the API with authentication token and common configurations.
+        
+        Args:
+            token: API authentication token
+        """
         self.token = token
         self.base_url = os.getenv('EVENT_API_BASE_URL', '').rstrip('/')  # Remove trailing slash if present
-        self.headers = {
+        
+        # Common headers for all implementations
+        self.base_headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
             "Cache-Control": "no-cache"
         }
-        logger.debug(f"API initialized with URL: {self.base_url}")
-        logger.debug(f"Using headers: {self.headers}")
-
-    def get_events(self):
-        logger.debug(f"Making request to: {self.base_url}/events")
-        response = requests.get(f"{self.base_url}/events", headers=self.headers, verify=False)
-        response.raise_for_status()
-        return response.json()
-
-    def get_tickets(self, skip: int = 0, limit: int = 1000):
-        params = {
-            "status": "VALID,DETAILSREQUIRED",
-            "skip": skip,
-            "top": limit
-        }
-        logger.debug(f"Making request to: {self.base_url}/tickets with params {params}")
-        response = requests.get(f"{self.base_url}/tickets", headers=self.headers, params=params, verify=False)
-        response.raise_for_status()
-        return response.json()
         
-    # Simple no-op close method for API interface consistency
-    async def close(self):
-        pass
-
-class VivenuHttpxAPI:
-    """API implementation using httpx"""
-    def __init__(self, token: str):
-        self.token = token
-        self.base_url = os.getenv('EVENT_API_BASE_URL', '').rstrip('/')  # Remove trailing slash if present
-        
-        # Browser-like headers
-        self.headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {token}",
+        # Add browser-like headers to help with Cloudflare
+        self.browser_headers = {
+            **self.base_headers,
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "en-US,en;q=0.9",
             "Origin": "https://vivenu.com",
             "Referer": "https://vivenu.com/"
         }
-        self._client = None
-        self._loop = None
+        
         logger.debug(f"API initialized with URL: {self.base_url}")
+    
+    def get_events(self):
+        """
+        Fetch events from the API.
+        
+        Returns:
+            dict: API response with events data
+        
+        Raises:
+            NotImplementedError: Must be implemented by subclasses
+        """
+        raise NotImplementedError("Subclasses must implement get_events()")
+    
+    def get_tickets(self, skip: int = 0, limit: int = 1000):
+        """
+        Fetch tickets from the API with pagination.
+        
+        Args:
+            skip: Number of tickets to skip (for pagination)
+            limit: Maximum number of tickets to return
+            
+        Returns:
+            dict: API response with tickets data
+            
+        Raises:
+            NotImplementedError: Must be implemented by subclasses
+        """
+        raise NotImplementedError("Subclasses must implement get_tickets()")
+    
+    async def close(self):
+        """Clean up resources used by the API client"""
+        pass
+
+
+class VivenuAPI(BaseVivenuAPI):
+    """Synchronous API implementation using requests library"""
+    
+    def __init__(self, token: str):
+        """
+        Initialize the synchronous API client.
+        
+        Args:
+            token: API authentication token
+        """
+        super().__init__(token)
+        # Use only base headers for simplicity
+        self.headers = self.base_headers
         logger.debug(f"Using headers: {self.headers}")
         
+        # Create a session for connection pooling and better performance
+        self.session = requests.Session()
+        self.session.headers.update(self.headers)
+
+    def get_events(self):
+        """Get events using synchronous requests"""
+        logger.debug(f"Making request to: {self.base_url}/events")
+        response = self.session.get(f"{self.base_url}/events", verify=False)
+        response.raise_for_status()
+        return response.json()
+
+    def get_tickets(self, skip: int = 0, limit: int = 1000):
+        """Get tickets using synchronous requests with pagination"""
+        params = {
+            "status": "VALID,DETAILSREQUIRED",
+            "skip": skip,
+            "top": limit
+        }
+        logger.debug(f"Making request to: {self.base_url}/tickets with params {params}")
+        response = self.session.get(f"{self.base_url}/tickets", params=params, verify=False)
+        response.raise_for_status()
+        return response.json()
+        
+    async def close(self):
+        """Close the requests session"""
+        if hasattr(self, 'session'):
+            self.session.close()
+
+
+class VivenuHttpxAPI(BaseVivenuAPI):
+    """Asynchronous API implementation using httpx library"""
+    
+    def __init__(self, token: str):
+        """
+        Initialize the asynchronous API client.
+        
+        Args:
+            token: API authentication token
+        """
+        super().__init__(token)
+        # Use browser headers for better Cloudflare handling
+        self.headers = self.browser_headers
+        logger.debug(f"Using headers: {self.headers}")
+        
+        self._client = None
+        self._loop = None
+        
     async def _ensure_client(self):
-        """Ensure httpx client exists"""
+        """
+        Ensure httpx client exists or create a new one.
+        
+        Returns:
+            httpx.AsyncClient: The async HTTP client
+        """
         if self._client is None:
             self._client = httpx.AsyncClient(
                 headers=self.headers,
-                verify=False,  # Try disabling SSL verification
-                timeout=30.0
+                verify=False,  # Disable SSL verification
+                timeout=30.0,
+                limits=httpx.Limits(
+                    max_keepalive_connections=10,
+                    max_connections=20,
+                    keepalive_expiry=30.0
+                )
             )
         return self._client
         
     async def _get_events_async(self):
-        """Async implementation of get_events using httpx"""
+        """
+        Async implementation of get_events using httpx.
+        
+        Returns:
+            dict: API response with events data
+            
+        Raises:
+            Exception: Any error during API request
+        """
         client = await self._ensure_client()
         url = f"{self.base_url}/events"
         
@@ -162,7 +424,19 @@ class VivenuHttpxAPI:
             raise
             
     async def _get_tickets_async(self, skip: int = 0, limit: int = 1000):
-        """Async implementation of get_tickets using httpx"""
+        """
+        Async implementation of get_tickets using httpx.
+        
+        Args:
+            skip: Number of tickets to skip (for pagination)
+            limit: Maximum number of tickets to return
+            
+        Returns:
+            dict: API response with tickets data
+            
+        Raises:
+            Exception: Any error during API request
+        """
         client = await self._ensure_client()
         url = f"{self.base_url}/tickets"
         
@@ -190,7 +464,12 @@ class VivenuHttpxAPI:
             raise
 
     def _get_or_create_loop(self):
-        """Get existing loop or create a new one if needed"""
+        """
+        Get existing loop or create a new one if needed.
+        
+        Returns:
+            asyncio.AbstractEventLoop: The event loop
+        """
         try:
             loop = asyncio.get_event_loop()
             if loop.is_closed():
@@ -203,7 +482,12 @@ class VivenuHttpxAPI:
             return loop
 
     def get_events(self):
-        """Synchronous wrapper for the async method"""
+        """
+        Synchronous wrapper for the async method.
+        
+        Returns:
+            dict: API response with events data
+        """
         loop = self._get_or_create_loop()
         try:
             return loop.run_until_complete(self._get_events_async())
@@ -216,7 +500,16 @@ class VivenuHttpxAPI:
             raise
 
     def get_tickets(self, skip: int = 0, limit: int = 1000):
-        """Synchronous wrapper for the async method"""
+        """
+        Synchronous wrapper for the async method.
+        
+        Args:
+            skip: Number of tickets to skip (for pagination)
+            limit: Maximum number of tickets to return
+            
+        Returns:
+            dict: API response with tickets data
+        """
         loop = self._get_or_create_loop()
         try:
             return loop.run_until_complete(self._get_tickets_async(skip, limit))
@@ -245,42 +538,117 @@ class VivenuHttpxAPI:
                 logger.debug(f"Error closing httpx client: {str(e)}")
 
 class DatabaseManager:
-    def __init__(self, schema: str):
+    """
+    Manages database connections, schema setup, and session management.
+    
+    This class handles creating the database engine, setting up schemas and tables,
+    and providing session factory functionality.
+    """
+    
+    def __init__(self, schema: str, config: Config = None):
+        """
+        Initialize the database manager.
+        
+        Args:
+            schema: Database schema to use
+            config: Application configuration
+        """
         self.schema = schema
+        self.config = config or app_config
         self.engine = self._create_engine()
         self._session_factory = sessionmaker(bind=self.engine)
-
+        
     def _create_engine(self):
-        """Create database engine from environment variables"""
-        db_url = f"postgresql://{os.getenv('POSTGRES_USER')}:{os.getenv('POSTGRES_PASSWORD')}@{os.getenv('POSTGRES_HOST')}:{os.getenv('POSTGRES_PORT')}/{os.getenv('POSTGRES_DB')}"
-        return create_engine(db_url)
+        """
+        Create SQLAlchemy engine using configuration settings.
+        
+        Returns:
+            sqlalchemy.engine.Engine: Database engine
+        
+        Raises:
+            ValueError: If database configuration is invalid
+        """
+        try:
+            # Validate database configuration
+            if not self.config.db_name or not self.config.db_user:
+                raise ValueError("Missing database configuration")
+                
+            db_uri = self.config.get_db_uri()
+            logger.debug(f"Creating database engine with URI: {db_uri.replace(self.config.db_password, '******')}")
+            
+            # Create engine with appropriate settings
+            return create_engine(
+                db_uri,
+                pool_pre_ping=True,  # Check connection validity before using
+                pool_size=5,         # Connection pool size
+                max_overflow=10,     # Max extra connections when pool is full
+                pool_timeout=30,     # Seconds to wait for connection from pool
+                pool_recycle=1800    # Recycle connections after 30 minutes
+            )
+        except Exception as e:
+            logger.error(f"Failed to create database engine: {str(e)}")
+            raise
 
     def get_session(self):
-        """Create a new session for each request"""
+        """
+        Create a new session and set the schema search path.
+        
+        Returns:
+            sqlalchemy.orm.Session: Database session
+        """
         session = self._session_factory()
         session.execute(text(f"SET search_path TO {self.schema}"))
         return session
 
     def setup_schema(self):
-        """Set up schema and tables"""
-        with self.engine.connect() as conn:
-            conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {self.schema}"))
-            conn.execute(text(f"SET search_path TO {self.schema}"))
+        """
+        Set up schema and tables with appropriate error handling.
+        
+        Raises:
+            Exception: If schema setup fails
+        """
+        try:
+            logger.info(f"Setting up schema and tables for {self.schema}")
             
-            # Drop existing tables
-            if os.getenv('ENABLE_GROWTH_ANALYSIS', 'false').lower() != 'true':
-                conn.execute(text(f"DROP TABLE IF EXISTS {self.schema}.summary_report CASCADE"))
-            conn.execute(text(f"""
-                DROP TABLE IF EXISTS {self.schema}.ticket_type_summary CASCADE;
-                DROP TABLE IF EXISTS {self.schema}.tickets CASCADE;
-                DROP TABLE IF EXISTS {self.schema}.events CASCADE;
-            """))
-            conn.commit()
+            with self.engine.connect() as conn:
+                # Create schema if it doesn't exist
+                conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {self.schema}"))
+                conn.execute(text(f"SET search_path TO {self.schema}"))
+                
+                # Drop existing tables with exception for summary_report if growth analysis is enabled
+                if not self.config.enable_growth_analysis:
+                    conn.execute(text(f"DROP TABLE IF EXISTS {self.schema}.summary_report CASCADE"))
+                    
+                conn.execute(text(f"""
+                    DROP TABLE IF EXISTS {self.schema}.ticket_type_summary CASCADE;
+                    DROP TABLE IF EXISTS {self.schema}.tickets CASCADE;
+                    DROP TABLE IF EXISTS {self.schema}.events CASCADE;
+                """))
+                conn.commit()
 
-        # Create tables
-        Base.metadata.schema = self.schema
-        Base.metadata.create_all(self.engine)
-        logger.info(f"Successfully set up schema and tables for {self.schema}")
+            # Create tables
+            Base.metadata.schema = self.schema
+            Base.metadata.create_all(self.engine)
+            logger.info(f"Successfully set up schema and tables for {self.schema}")
+            
+        except Exception as e:
+            logger.error(f"Failed to set up schema {self.schema}: {str(e)}")
+            raise
+            
+    def check_connection(self) -> bool:
+        """
+        Check if database connection is working.
+        
+        Returns:
+            bool: True if connection is successful, False otherwise
+        """
+        try:
+            with self.engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+                return True
+        except Exception as e:
+            logger.error(f"Database connection check failed: {str(e)}")
+            return False
 
 class TransactionManager:
     def __init__(self, db_manager: DatabaseManager):
@@ -343,18 +711,6 @@ def determine_ticket_event_day(ticket_name: str) -> TicketEventDay:
     elif 'friday' in name_lower:
         return TicketEventDay.FRIDAY
     return TicketEventDay.SATURDAY
-
-# Add logging configuration
-class LogConfig:
-    DEBUG_ENABLED = False  # Toggle for debug logging
-
-    @classmethod
-    def set_debug(cls, enabled: bool):
-        cls.DEBUG_ENABLED = enabled
-        if enabled:
-            logger.setLevel(logging.DEBUG)
-        else:
-            logger.setLevel(logging.INFO)
 
 def calculate_age(birth_date) -> Union[int, None]:
     if birth_date:
@@ -757,248 +1113,478 @@ def process_batch(session, tickets: List, event_data: Dict, schema: str, region:
     return processed
 
 class BatchProcessor:
-    def __init__(self, batch_size: int = 1000, max_workers: int = 5):
+    """
+    Process data in batches with optimized performance and error handling.
+    
+    This class handles batched processing of tickets with various API implementations,
+    managing resources efficiently and providing robust error handling.
+    """
+    
+    def __init__(self, api, batch_size=1000, max_retries=3, retry_delay=5):
+        """
+        Initialize the batch processor.
+        
+        Args:
+            api: API implementation (VivenuAPI or VivenuHttpxAPI)
+            batch_size: Number of items to process in each batch
+            max_retries: Maximum number of retries for failed requests
+            retry_delay: Delay in seconds between retries
+        """
+        self.api = api
         self.batch_size = batch_size
-        self.max_workers = max_workers
-
-    def process_tickets(self, api, db_manager: DatabaseManager, event_data: Dict, schema: str, region: str) -> int:
-        """Process tickets in optimized batches"""
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+    
+    def process_tickets_sync(self, tickets_processor_fn, start_from=0):
+        """
+        Synchronous wrapper for process_tickets async method.
+        
+        Args:
+            tickets_processor_fn: Function to process each batch of tickets
+            start_from: Starting index for ticket pagination
+            
+        Returns:
+            tuple: (total_tickets_processed, has_more)
+        """
+        # Get or create a new event loop
         try:
-            # Get the first batch to determine total count
-            first_batch = api.get_tickets(skip=0, limit=1)
-            total_tickets = first_batch.get("total", 0)
-            
-            if not total_tickets:
-                logger.warning("No tickets found to process")
-                return 0
-
-            total_batches = ceil(total_tickets / self.batch_size)
-            processed_total = 0
-            logger.info(f"Processing {total_tickets} tickets in {total_batches} batches")
-
-            # Process in chunks to control parallelism
-            for chunk_start in range(0, total_batches, self.max_workers):
-                chunk_end = min(chunk_start + self.max_workers, total_batches)
-                
-                # For httpx API which is async capable
-                if isinstance(api, VivenuHttpxAPI):
-                    # Process httpx API batches with ThreadPoolExecutor instead of asyncio
-                    # This avoids event loop issues
-                    with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                        futures = []
-                        for batch_num in range(chunk_start, chunk_end):
-                            skip = batch_num * self.batch_size
-                            futures.append(
-                                executor.submit(
-                                    self._process_httpx_batch, 
-                                    api.token, 
-                                    api.base_url,
-                                    api.headers,
-                                    db_manager, 
-                                    event_data, 
-                                    schema, 
-                                    region, 
-                                    batch_num, 
-                                    skip, 
-                                    total_batches,
-                                    self.batch_size
-                                )
-                            )
-                        
-                        # Process results
-                        for future in as_completed(futures):
-                            try:
-                                result = future.result()
-                                if isinstance(result, int):
-                                    processed_total += result
-                            except Exception as e:
-                                logger.error(f"Batch processing error: {str(e)}")
-                else:
-                    # For non-async APIs (like regular VivenuAPI), process sequentially
-                    for batch_num in range(chunk_start, chunk_end):
-                        try:
-                            skip = batch_num * self.batch_size
-                            # Fetch batch
-                            response = api.get_tickets(skip=skip, limit=self.batch_size)
-                            tickets = response.get("rows", [])
-                            
-                            if tickets:
-                                # Process batch in a transaction
-                                with TransactionManager(db_manager) as session:
-                                    processed = process_batch(session, tickets, event_data, schema, region)
-                                    processed_total += processed
-                                    logger.info(
-                                        f"Batch {batch_num + 1}/{total_batches} complete. "
-                                        f"Processed: {processed}/{len(tickets)} tickets."
-                                    )
-                        except Exception as e:
-                            logger.error(f"Error processing batch {batch_num + 1}/{total_batches}: {str(e)}")
-
-            return processed_total
-            
-        except Exception as e:
-            logger.error(f"Error in process_tickets: {str(e)}")
-            raise
-            
-    def _process_httpx_batch(self, token, base_url, headers, db_manager, event_data, schema, region, batch_num, skip, total_batches, batch_size):
-        """Process a single batch using httpx in its own thread and event loop"""
-        try:
-            # Create a new event loop for this thread
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+        except RuntimeError:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             
-            try:
-                # Run the async processing
-                return loop.run_until_complete(
-                    self._process_single_batch(token, base_url, headers, db_manager, event_data, schema, region, batch_num, skip, total_batches, batch_size)
-                )
-            finally:
-                # Always clean up the event loop
-                loop.close()
-                
+        # Run the async method in the event loop
+        try:
+            return loop.run_until_complete(self.process_tickets(tickets_processor_fn, start_from))
         except Exception as e:
-            logger.error(f"Error processing batch {batch_num + 1}/{total_batches}: {str(e)}")
+            logger.error(f"Error in process_tickets_sync: {str(e)}")
+            raise
+        
+    async def process_tickets(self, tickets_processor_fn, start_from=0):
+        """
+        Process tickets in batches using the provided processor function.
+        
+        Args:
+            tickets_processor_fn: Function to process each batch of tickets
+            start_from: Starting index for ticket pagination
+            
+        Returns:
+            tuple: (total_tickets_processed, has_more)
+        """
+        logger.info(f"Starting batch processing from index {start_from} with batch size {self.batch_size}")
+        
+        # Track metrics
+        total_processed = 0
+        batch_count = 0
+        has_more = True
+        retry_count = 0
+        
+        try:
+            # Create a fresh event loop for processing if needed
+            loop = None
+            using_async_io = False
+            
+            if asyncio.iscoroutinefunction(self.api.get_tickets):
+                using_async_io = True
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_closed():
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+            
+            current_skip = start_from
+            
+            while has_more and retry_count < self.max_retries:
+                try:
+                    batch_start_time = time.time()
+                    logger.info(f"Fetching batch {batch_count+1} (skip={current_skip}, limit={self.batch_size})")
+                    
+                    # Get tickets for this batch
+                    try:
+                        if using_async_io:
+                            # Use asyncio for the API call
+                            response = await self.api.get_tickets(skip=current_skip, limit=self.batch_size)
+                        else:
+                            # Use synchronous API call
+                            response = self.api.get_tickets(skip=current_skip, limit=self.batch_size)
+                    except Exception as e:
+                        logger.error(f"Error fetching tickets: {str(e)}")
+                        raise
+                        
+                    # Process the response
+                    if not response:
+                        logger.warning("Empty API response")
+                        has_more = False
+                        break
+                    
+                    # Check for tickets in response - handle different API response formats
+                    tickets = None
+                    if 'value' in response:
+                        tickets = response.get('value', [])
+                    elif 'rows' in response:
+                        tickets = response.get('rows', [])
+                    else:
+                        logger.warning(f"Unexpected API response format: {response}")
+                        has_more = False
+                        break
+                    
+                    batch_size = len(tickets)
+                    
+                    if batch_size == 0:
+                        logger.info("No more tickets to process")
+                        has_more = False
+                        break
+                        
+                    # Process this batch of tickets
+                    logger.info(f"Processing {batch_size} tickets")
+                    tickets_processor_fn(tickets)
+                    
+                    # Update metrics
+                    batch_count += 1
+                    total_processed += batch_size
+                    current_skip += batch_size
+                    
+                    # Check if we need to continue
+                    has_more = batch_size >= self.batch_size
+                    
+                    # Reset retry counter after successful batch
+                    retry_count = 0
+                    
+                    batch_end_time = time.time()
+                    logger.info(f"Batch {batch_count} completed in {batch_end_time - batch_start_time:.2f} seconds")
+                    
+                    # Add a small delay between batches to avoid rate limiting
+                    if has_more:
+                        await asyncio.sleep(1) if using_async_io else time.sleep(1)
+                        
+                except Exception as e:
+                    logger.error(f"Error processing batch: {str(e)}")
+                    retry_count += 1
+                    
+                    if retry_count >= self.max_retries:
+                        logger.error(f"Max retries ({self.max_retries}) reached, stopping batch processing")
+                        break
+                        
+                    # Exponential backoff for retries
+                    backoff_time = self.retry_delay * (2 ** (retry_count - 1))
+                    logger.info(f"Retry {retry_count}/{self.max_retries} in {backoff_time} seconds")
+                    await asyncio.sleep(backoff_time) if using_async_io else time.sleep(backoff_time)
+            
+            logger.info(f"Batch processing completed: {total_processed} tickets in {batch_count} batches")
+            return total_processed, has_more
+            
+        finally:
+            # Clean up resources
+            try:
+                if hasattr(self.api, 'close'):
+                    await self.api.close()
+            except Exception as e:
+                logger.error(f"Error closing API resources: {str(e)}")
+                
+    def process_events_sync(self, events_processor_fn):
+        """
+        Synchronous wrapper for process_events async method.
+        
+        Args:
+            events_processor_fn: Function to process the events
+            
+        Returns:
+            int: Number of events processed
+        """
+        # Get or create a new event loop
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+        # Run the async method in the event loop
+        try:
+            return loop.run_until_complete(self.process_events(events_processor_fn))
+        except Exception as e:
+            logger.error(f"Error in process_events_sync: {str(e)}")
             raise
 
-    async def _process_single_batch(self, token, base_url, headers, db_manager, event_data, schema, region, batch_num, skip, total_batches, batch_size):
-        """Process a single batch with a fresh httpx client"""
-        # Create a new httpx client for this batch only
-        async with httpx.AsyncClient(headers=headers, verify=False, timeout=30.0) as client:
+    async def process_events(self, events_processor_fn):
+        """
+        Process all events using the provided processor function.
+        
+        Args:
+            events_processor_fn: Function to process the events
+            
+        Returns:
+            int: Number of events processed
+        """
+        logger.info("Processing events")
+        
+        try:
+            # Determine if we're using async API
+            using_async_io = asyncio.iscoroutinefunction(self.api.get_events)
+            
+            # Get all events
             try:
-                # Fetch the tickets
-                url = f"{base_url}/tickets"
-                params = {
-                    "status": "VALID,DETAILSREQUIRED",
-                    "skip": skip,
-                    "top": batch_size
-                }
-                
-                # Add a small delay to avoid rate limiting
-                await asyncio.sleep(0.5)
-                
-                response = await client.get(url, params=params)
-                
-                if response.status_code != 200:
-                    logger.error(f"Error response status: {response.status_code}")
-                    logger.error(f"Error response body: {response.text}")
-                    response.raise_for_status()
-                
-                ticket_data = response.json()
-                tickets = ticket_data.get("rows", [])
-                
-                if not tickets:
-                    logger.warning(f"No tickets found in batch {batch_num + 1}/{total_batches}")
-                    return 0
-                
-                # Process the batch in a blocking transaction
-                with TransactionManager(db_manager) as session:
-                    processed = process_batch(session, tickets, event_data, schema, region)
-                    logger.info(
-                        f"Batch {batch_num + 1}/{total_batches} complete. "
-                        f"Processed: {processed}/{len(tickets)} tickets."
-                    )
-                    return processed
-                    
+                if using_async_io:
+                    # Use asyncio for the API call
+                    response = await self.api.get_events()
+                else:
+                    # Use synchronous API call
+                    response = self.api.get_events()
             except Exception as e:
-                logger.error(f"Error processing batch {batch_num + 1}/{total_batches}: {str(e)}")
-                raise
+                logger.error(f"Error fetching events: {str(e)}")
+                return 0
+                
+            # Process the response - handle different API response formats
+            events = None
+            if 'value' in response:
+                events = response.get('value', [])
+            elif 'rows' in response:
+                events = response.get('rows', [])
+            else:
+                logger.warning(f"Unexpected API response format: {response}")
+                return 0
+                
+            event_count = len(events)
+            
+            if event_count == 0:
+                logger.info("No events to process")
+                return 0
+                
+            # Process the events
+            logger.info(f"Processing {event_count} events")
+            events_processor_fn(events)
+            
+            logger.info(f"Event processing completed: {event_count} events")
+            return event_count
+            
+        finally:
+            # Clean up resources
+            try:
+                if hasattr(self.api, 'close'):
+                    await self.api.close()
+            except Exception as e:
+                logger.error(f"Error closing API resources: {str(e)}")
+                
+        return 0
 
 def ingest_data(token: str, event_id: str, schema: str, region: str, skip_fetch: bool = False, debug: bool = False):
-    """Main ingestion function"""
-    LogConfig.set_debug(debug)
-    db_manager = DatabaseManager(schema)
+    """
+    Main ingestion function that orchestrates the data ingestion process.
+    
+    Args:
+        token: API authentication token
+        event_id: Event ID to process
+        schema: Database schema name
+        region: Region code
+        skip_fetch: If True, skip API fetching and only update summaries
+        debug: Enable debug logging
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    # Set up logging level based on debug flag
+    log_config.set_debug(debug)
+    
+    # Create a configuration object specifically for this ingestion
+    config = Config()
+    config.api_token = token
+    
+    # Create the database manager
+    db_manager = DatabaseManager(schema, config)
+    
+    # Validate database connection
+    if not db_manager.check_connection():
+        logger.error(f"Cannot proceed - database connection failed for schema {schema}")
+        return False
+    
+    # Track timing for performance monitoring
+    start_time = time.time()
+    api = None
+    api_type = None
     
     try:
-        if not skip_fetch:
-            db_manager.setup_schema()
-
+        logger.info(f"Starting data ingestion for event {event_id} in schema {schema}")
+        
+        # If skip_fetch, just update summaries
         if skip_fetch:
+            logger.info("Skipping API fetch, updating summaries only")
             with TransactionManager(db_manager) as session:
                 update_ticket_summary(session, schema, event_id)
                 update_summary_report(session, schema, event_id)
-            return
+            
+            elapsed = time.time() - start_time
+            logger.info(f"Summary updates completed in {elapsed:.2f} seconds")
+            return True
 
-        # Initialize variables
-        api = None
-        events = None
-        api_type = None
+        # Set up schema and tables
+        db_manager.setup_schema()
+
+        # Initialize API client with fallback strategy
+        api, events, api_type = initialize_api(token)
         
-        # Start with httpx implementation since it's working
-        try:
-            logger.info("Using httpx implementation for API access")
-            api = VivenuHttpxAPI(token)
-            events = api.get_events()
-            logger.info("Successfully connected with httpx implementation")
-            api_type = "httpx"
-        except Exception as e:
-            logger.warning(f"httpx implementation failed: {str(e)}")
-            # Clean up httpx client if needed
-            if api and hasattr(api, 'close') and api_type == "httpx":
-                try:
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    loop.run_until_complete(api.close())
-                except Exception:
-                    pass
+        if not api or not events:
+            logger.error("Failed to initialize API client or get events data")
+            return False
             
-            # Fall back to standard API as last resort
-            try:
-                logger.info("Falling back to standard requests implementation")
-                api = VivenuAPI(token)
-                events = api.get_events()
-                logger.info("Successfully connected with standard requests implementation")
-                api_type = "requests"
-            except Exception as e:
-                logger.error(f"All API implementations failed. Last error: {str(e)}")
-                raise
-        
-        if not events or not api:
-            logger.error("Failed to get events from API")
-            return
-            
-        found_event_data = None
-        
+        # Find the target event
+        found_event_data = find_event(events, event_id)
+        if not found_event_data:
+            logger.error(f"Event {event_id} not found in API response")
+            return False
+
+        # Create the event record in the database
         with TransactionManager(db_manager) as session:
             verify_tables(session, schema)
-            for event_data in events["rows"]:
-                if event_data.get("_id") == event_id:
-                    event = create_event(session, event_data, schema)
-                    found_event_data = event_data
-                    logger.info(f"Found matching event: {event_id}")
-                    break
-
-        if not found_event_data:
-            logger.error(f"Event {event_id} not found")
-            return
+            event = create_event(session, found_event_data, schema)
+            logger.info(f"Created/updated event record: {event.id} - {event.name}")
 
         # Process tickets with optimized batching
-        batch_processor = BatchProcessor(batch_size=1000, max_workers=5)
-        processed_count = batch_processor.process_tickets(api, db_manager, found_event_data, schema, region)
+        with TransactionManager(db_manager) as session:
+            batch_processor = BatchProcessor(api, batch_size=config.batch_size, max_retries=config.max_retries, retry_delay=config.retry_delay)
+            
+            # Define a processor function to handle each batch of tickets
+            def process_batch_with_session(tickets):
+                return process_batch(session, tickets, found_event_data, schema, region)
+                
+            # Process all tickets using the synchronous wrapper method
+            processed_count, has_more = batch_processor.process_tickets_sync(process_batch_with_session, start_from=0)
+            
+            logger.info(f"Processed {processed_count} tickets for event {event_id}")
         
+        # Update summaries in final transaction
         if processed_count > 0:
-            # Update summaries in final transaction
             with TransactionManager(db_manager) as session:
                 update_ticket_summary(session, schema, event_id)
                 update_summary_report(session, schema, event_id)
                 
             logger.info(f"Successfully processed {processed_count} tickets for event {event_id}")
+            
+        elapsed = time.time() - start_time
+        logger.info(f"Ingestion completed in {elapsed:.2f} seconds")
+        return True
 
     except Exception as e:
-        logger.error(f"Error during ingestion for schema {schema}: {str(e)}", exc_info=True)
-        raise
+        elapsed = time.time() - start_time
+        logger.error(f"Error during ingestion for schema {schema} after {elapsed:.2f} seconds: {str(e)}", exc_info=True)
+        return False
     finally:
         # Ensure the API session is properly closed
-        try:
-            if api and hasattr(api, 'close') and api_type == "httpx":
+        if api:  # Add check to avoid UnboundLocalError
+            cleanup_api_resources(api, api_type)
+
+def initialize_api(token: str) -> Tuple[Optional[BaseVivenuAPI], Optional[Dict], Optional[str]]:
+    """
+    Initialize API client with fallback strategy.
+    
+    Args:
+        token: API authentication token
+        
+    Returns:
+        tuple: (api_client, events_data, api_type)
+    """
+    api = None
+    events = None
+    api_type = None
+    
+    # Start with httpx implementation
+    try:
+        logger.info("Using httpx implementation for API access")
+        api = VivenuHttpxAPI(token)
+        events = api.get_events()
+        logger.info("Successfully connected with httpx implementation")
+        api_type = "httpx"
+        return api, events, api_type
+    except Exception as e:
+        logger.warning(f"httpx implementation failed: {str(e)}")
+        # Clean up httpx client
+        cleanup_api_resources(api, "httpx")
+    
+    # Fall back to standard API
+    try:
+        logger.info("Falling back to standard requests implementation")
+        api = VivenuAPI(token)
+        events = api.get_events()
+        logger.info("Successfully connected with standard requests implementation")
+        api_type = "requests"
+        return api, events, api_type
+    except Exception as e:
+        logger.error(f"All API implementations failed. Last error: {str(e)}")
+        return None, None, None
+
+def cleanup_api_resources(api: Optional[BaseVivenuAPI], api_type: Optional[str]):
+    """
+    Safely clean up API resources.
+    
+    Args:
+        api: API client to clean up
+        api_type: Type of API client
+    """
+    if not api:
+        return
+        
+    try:
+        if hasattr(api, 'close'):
+            if api_type == "httpx":
                 try:
                     # Create a new event loop for cleanup to avoid "loop is closed" errors
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     loop.run_until_complete(api.close())
                 except Exception as e:
-                    logger.debug(f"Error closing API session: {str(e)}")
-        except Exception as e:
-            logger.debug(f"Error during API cleanup: {str(e)}")
+                    logger.debug(f"Error closing httpx client: {str(e)}")
+            else:
+                # Synchronous close
+                if asyncio.iscoroutinefunction(api.close):
+                    # Handle async close method in sync context
+                    try:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(api.close())
+                    except Exception as e:
+                        logger.debug(f"Error closing API client: {str(e)}")
+                else:
+                    api.close()
+    except Exception as e:
+        logger.debug(f"Error during API cleanup: {str(e)}")
+
+def find_event(events: Dict, event_id: str) -> Optional[Dict]:
+    """
+    Find an event by ID in the events data.
+    
+    Args:
+        events: Events data from API
+        event_id: Event ID to find
+        
+    Returns:
+        dict: Event data or None if not found
+    """
+    if not events:
+        return None
+        
+    # Check for events in different possible response formats
+    event_list = []
+    if "rows" in events:
+        event_list = events["rows"]
+    elif "value" in events:
+        event_list = events["value"]
+    else:
+        logger.warning(f"Unknown events data format: {list(events.keys())}")
+        return None
+        
+    for event_data in event_list:
+        if event_data.get("_id") == event_id:
+            logger.info(f"Found matching event: {event_id}")
+            return event_data
+            
+    return None
 
 def get_event_configs():
     """Get all event configurations from environment"""
@@ -1047,46 +1633,101 @@ def normalize_yes_no(value: Optional[str]) -> Optional[bool]:
     return None
 
 if __name__ == "__main__":
-    load_dotenv()
+    """Main execution entry point"""
     
-    # Add command line argument for debug mode
+    # Parse command line arguments
     import argparse
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description='Ingest events and tickets data from the Vivenu API and store them in the database',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
-    parser.add_argument('--skip_fetch', action='store_true', help='Enable skipping API calls')
+    parser.add_argument('--skip-fetch', action='store_true', help='Skip API fetching and only update summaries')
+    parser.add_argument('--event-id', type=str, help='Event ID to process (overrides env config)')
+    parser.add_argument('--schema', type=str, help='Database schema name (overrides env config)')
+    parser.add_argument('--region', type=str, help='Region code (overrides env config)')
+    parser.add_argument('--token', type=str, help='API token (overrides env config)')
     args = parser.parse_args()
     
-    configs = get_event_configs()
-    if not configs:
-        raise ValueError("No valid event configurations found in environment")
-    
-    # Set up main event loop
+    # Set debug logging if requested
+    if args.debug:
+        log_config.set_debug(True)
+        logger.info("Debug logging enabled")
+
+    # Initialize event loop
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
     
-    # Process each config
-    for config in configs:
+    # Process specific event if provided in command line
+    if all([args.event_id, args.schema, args.region, args.token]):
+        logger.info(f"Processing specific event from command line: {args.event_id}")
         try:
-            logger.info(f"Processing schema: {config['schema']}")
-            ingest_data(
-                config["token"], 
-                config["event_id"], 
-                config["schema"], 
-                config["region"],
+            success = ingest_data(
+                token=args.token,
+                event_id=args.event_id,
+                schema=args.schema,
+                region=args.region,
                 skip_fetch=args.skip_fetch,
                 debug=args.debug
             )
+            if not success:
+                logger.error(f"Failed to process event {args.event_id}")
+                sys.exit(1)
         except Exception as e:
-            logger.error(f"Failed to process schema {config['schema']}: {e}")
-            continue 
+            logger.error(f"Error processing event {args.event_id}: {e}", exc_info=True)
+            sys.exit(1)
+    else:
+        # Get configs from environment
+        configs = Config.get_event_configs()
+        if not configs:
+            logger.error("No valid event configurations found in environment")
+            sys.exit(1)
+        
+        logger.info(f"Found {len(configs)} event configurations to process")
+        
+        # Track success/failure counts
+        success_count = 0
+        failure_count = 0
+            
+        # Process each config
+        for config in configs:
+            try:
+                logger.info(f"Processing schema: {config['schema']}")
+                success = ingest_data(
+                    token=config["token"], 
+                    event_id=config["event_id"], 
+                    schema=config["schema"], 
+                    region=config["region"],
+                    skip_fetch=args.skip_fetch,
+                    debug=args.debug
+                )
+                if success:
+                    success_count += 1
+                else:
+                    failure_count += 1
+                    logger.error(f"Failed to process schema {config['schema']}")
+            except Exception as e:
+                failure_count += 1
+                logger.error(f"Failed to process schema {config['schema']}: {e}", exc_info=True)
+                continue
+                
+        # Log summary statistics
+        logger.info(f"Processing completed: {success_count} succeeded, {failure_count} failed")
+        if failure_count > 0:
+            logger.warning("Some events failed to process, check logs for details")
+            sys.exit(1)
             
     # Clean up event loop
     try:
         pending = asyncio.all_tasks(loop)
         if pending:
             loop.run_until_complete(asyncio.gather(*pending))
-    except Exception:
-        pass 
+    except Exception as e:
+        logger.debug(f"Error cleaning up event loop: {e}")
+    finally:
+        # Exit with success
+        logger.info("Processing completed successfully")
+        sys.exit(0) 
