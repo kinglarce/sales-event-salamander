@@ -481,6 +481,19 @@ class VivenuHttpxAPI(BaseVivenuAPI):
             asyncio.set_event_loop(loop)
             return loop
 
+    def _is_loop_running(self):
+        """
+        Check if an event loop is already running.
+        
+        Returns:
+            bool: True if a loop is running, False otherwise
+        """
+        try:
+            loop = asyncio.get_event_loop()
+            return loop.is_running()
+        except RuntimeError:
+            return False
+
     def get_events(self):
         """
         Synchronous wrapper for the async method.
@@ -488,6 +501,21 @@ class VivenuHttpxAPI(BaseVivenuAPI):
         Returns:
             dict: API response with events data
         """
+        # Check if we're in an already running event loop
+        if self._is_loop_running():
+            logger.debug("Event loop already running, using direct synchronous HTTP request for events")
+            # Use a requests-based approach as a fallback
+            headers = self.browser_headers
+            try:
+                import requests
+                response = requests.get(f"{self.base_url}/events", headers=headers, verify=False)
+                response.raise_for_status()
+                return response.json()
+            except Exception as e:
+                logger.error(f"Direct synchronous request failed: {str(e)}")
+                raise
+        
+        # Normal async execution path
         loop = self._get_or_create_loop()
         try:
             return loop.run_until_complete(self._get_events_async())
@@ -510,6 +538,26 @@ class VivenuHttpxAPI(BaseVivenuAPI):
         Returns:
             dict: API response with tickets data
         """
+        # Check if we're in an already running event loop
+        if self._is_loop_running():
+            logger.debug("Event loop already running, using direct synchronous HTTP request for tickets")
+            # Use a requests-based approach as a fallback
+            headers = self.browser_headers
+            params = {
+                "status": "VALID,DETAILSREQUIRED",
+                "skip": skip,
+                "top": limit
+            }
+            try:
+                import requests
+                response = requests.get(f"{self.base_url}/tickets", headers=headers, params=params, verify=False)
+                response.raise_for_status()
+                return response.json()
+            except Exception as e:
+                logger.error(f"Direct synchronous request failed: {str(e)}")
+                raise
+        
+        # Normal async execution path
         loop = self._get_or_create_loop()
         try:
             return loop.run_until_complete(self._get_tickets_async(skip, limit))
@@ -1146,23 +1194,122 @@ class BatchProcessor:
         Returns:
             tuple: (total_tickets_processed, has_more)
         """
-        # Get or create a new event loop
+        # Check if we're already in an event loop
         try:
             loop = asyncio.get_event_loop()
-            if loop.is_closed():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+            in_event_loop = loop.is_running()
         except RuntimeError:
+            in_event_loop = False
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             
-        # Run the async method in the event loop
-        try:
-            return loop.run_until_complete(self.process_tickets(tickets_processor_fn, start_from))
-        except Exception as e:
-            logger.error(f"Error in process_tickets_sync: {str(e)}")
-            raise
+        # If we're already in an event loop, we need to handle it differently
+        if in_event_loop:
+            logger.info("Using direct synchronous processing for tickets (event loop already running)")
+            return self._process_tickets_sync_direct(tickets_processor_fn, start_from)
+        else:
+            # Not in event loop, so we can use run_until_complete
+            logger.info("Using async processing with run_until_complete for tickets")
+            try:
+                return loop.run_until_complete(self.process_tickets(tickets_processor_fn, start_from))
+            except Exception as e:
+                logger.error(f"Error in process_tickets_sync: {str(e)}")
+                raise
+    
+    def _process_tickets_sync_direct(self, tickets_processor_fn, start_from=0):
+        """
+        Direct synchronous implementation of ticket processing.
+        Used when we're already in an event loop.
         
+        Args:
+            tickets_processor_fn: Function to process each batch of tickets
+            start_from: Starting index for ticket pagination
+            
+        Returns:
+            tuple: (total_tickets_processed, has_more)
+        """
+        # Track metrics
+        total_processed = 0
+        batch_count = 0
+        has_more = True
+        retry_count = 0
+        current_skip = start_from
+        
+        try:
+            while has_more and retry_count < self.max_retries:
+                try:
+                    batch_start_time = time.time()
+                    logger.info(f"Fetching batch {batch_count+1} (skip={current_skip}, limit={self.batch_size})")
+                    
+                    # Get tickets for this batch (synchronously)
+                    response = self.api.get_tickets(skip=current_skip, limit=self.batch_size)
+                        
+                    # Process the response
+                    if not response:
+                        logger.warning("Empty API response")
+                        has_more = False
+                        break
+                    
+                    # Check for tickets in response - handle different API response formats
+                    tickets = None
+                    if 'value' in response:
+                        tickets = response.get('value', [])
+                    elif 'rows' in response:
+                        tickets = response.get('rows', [])
+                    else:
+                        logger.warning(f"Unexpected API response format: {response}")
+                        has_more = False
+                        break
+                    
+                    batch_size = len(tickets)
+                    
+                    if batch_size == 0:
+                        logger.info("No more tickets to process")
+                        has_more = False
+                        break
+                        
+                    # Process this batch of tickets
+                    logger.info(f"Processing {batch_size} tickets")
+                    tickets_processor_fn(tickets)
+                    
+                    # Update metrics
+                    batch_count += 1
+                    total_processed += batch_size
+                    current_skip += batch_size
+                    
+                    # Check if we need to continue
+                    has_more = batch_size >= self.batch_size
+                    
+                    # Reset retry counter after successful batch
+                    retry_count = 0
+                    
+                    batch_end_time = time.time()
+                    logger.info(f"Batch {batch_count} completed in {batch_end_time - batch_start_time:.2f} seconds")
+                    
+                    # Add a small delay between batches to avoid rate limiting
+                    time.sleep(1)
+                        
+                except Exception as e:
+                    logger.error(f"Error processing batch: {str(e)}")
+                    retry_count += 1
+                    
+                    if retry_count >= self.max_retries:
+                        logger.error(f"Max retries ({self.max_retries}) reached, stopping batch processing")
+                        break
+                        
+                    # Exponential backoff for retries
+                    backoff_time = self.retry_delay * (2 ** (retry_count - 1))
+                    logger.info(f"Retry {retry_count}/{self.max_retries} in {backoff_time} seconds")
+                    time.sleep(backoff_time)
+            
+            logger.info(f"Direct batch processing completed: {total_processed} tickets in {batch_count} batches")
+            return total_processed, has_more
+            
+        finally:
+            # Clean up resources
+            if hasattr(self.api, 'close') and not asyncio.iscoroutinefunction(self.api.close):
+                self.api.close()
+
     async def process_tickets(self, tickets_processor_fn, start_from=0):
         """
         Process tickets in batches using the provided processor function.
@@ -1176,6 +1323,21 @@ class BatchProcessor:
         """
         logger.info(f"Starting batch processing from index {start_from} with batch size {self.batch_size}")
         
+        # Check if we're already in an event loop
+        in_event_loop = False
+        try:
+            loop = asyncio.get_event_loop()
+            in_event_loop = loop.is_running()
+        except RuntimeError:
+            # No event loop exists yet
+            pass
+
+        # If we're already in an event loop and using async API, we can't use await
+        # Fall back to direct synchronous processing
+        if in_event_loop and asyncio.iscoroutinefunction(self.api.get_tickets):
+            logger.info("Event loop already running and async API detected - using direct synchronous processing for tickets")
+            return self._process_tickets_sync_direct(tickets_processor_fn, start_from)
+        
         # Track metrics
         total_processed = 0
         batch_count = 0
@@ -1184,7 +1346,6 @@ class BatchProcessor:
         
         try:
             # Create a fresh event loop for processing if needed
-            loop = None
             using_async_io = False
             
             if asyncio.iscoroutinefunction(self.api.get_tickets):
@@ -1297,22 +1458,73 @@ class BatchProcessor:
         Returns:
             int: Number of events processed
         """
-        # Get or create a new event loop
+        # Check if we're already in an event loop
         try:
             loop = asyncio.get_event_loop()
-            if loop.is_closed():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+            in_event_loop = loop.is_running()
         except RuntimeError:
+            in_event_loop = False
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             
-        # Run the async method in the event loop
+        # If we're already in an event loop, we need to handle it differently
+        if in_event_loop:
+            logger.info("Using direct synchronous processing for events (event loop already running)")
+            return self._process_events_sync_direct(events_processor_fn)
+        else:
+            # Not in event loop, so we can use run_until_complete
+            logger.info("Using async processing with run_until_complete for events")
+            try:
+                return loop.run_until_complete(self.process_events(events_processor_fn))
+            except Exception as e:
+                logger.error(f"Error in process_events_sync: {str(e)}")
+                raise
+                
+    def _process_events_sync_direct(self, events_processor_fn):
+        """
+        Direct synchronous implementation of event processing.
+        Used when we're already in an event loop.
+        
+        Args:
+            events_processor_fn: Function to process the events
+            
+        Returns:
+            int: Number of events processed
+        """
         try:
-            return loop.run_until_complete(self.process_events(events_processor_fn))
+            # Get events synchronously
+            response = self.api.get_events()
+                
+            # Process the response - handle different API response formats
+            events = None
+            if 'value' in response:
+                events = response.get('value', [])
+            elif 'rows' in response:
+                events = response.get('rows', [])
+            else:
+                logger.warning(f"Unexpected API response format: {response}")
+                return 0
+                
+            event_count = len(events)
+            
+            if event_count == 0:
+                logger.info("No events to process")
+                return 0
+                
+            # Process the events
+            logger.info(f"Processing {event_count} events")
+            events_processor_fn(events)
+            
+            logger.info(f"Event processing completed: {event_count} events")
+            return event_count
+            
         except Exception as e:
-            logger.error(f"Error in process_events_sync: {str(e)}")
-            raise
+            logger.error(f"Error in direct event processing: {str(e)}")
+            return 0
+        finally:
+            # Clean up resources
+            if hasattr(self.api, 'close') and not asyncio.iscoroutinefunction(self.api.close):
+                self.api.close()
 
     async def process_events(self, events_processor_fn):
         """
@@ -1325,6 +1537,21 @@ class BatchProcessor:
             int: Number of events processed
         """
         logger.info("Processing events")
+        
+        # Check if we're already in an event loop
+        in_event_loop = False
+        try:
+            loop = asyncio.get_event_loop()
+            in_event_loop = loop.is_running()
+        except RuntimeError:
+            # No event loop exists yet
+            pass
+
+        # If we're already in an event loop and using async API, we can't use await
+        # Fall back to direct synchronous processing
+        if in_event_loop and asyncio.iscoroutinefunction(self.api.get_events):
+            logger.info("Event loop already running and async API detected - using direct synchronous processing for events")
+            return self._process_events_sync_direct(events_processor_fn)
         
         try:
             # Determine if we're using async API
@@ -1634,6 +1861,7 @@ def normalize_yes_no(value: Optional[str]) -> Optional[bool]:
 
 if __name__ == "__main__":
     """Main execution entry point"""
+    import sys  # Make sure we import sys
     
     # Parse command line arguments
     import argparse
@@ -1654,12 +1882,7 @@ if __name__ == "__main__":
         log_config.set_debug(True)
         logger.info("Debug logging enabled")
 
-    # Initialize event loop
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    # DO NOT initialize a global event loop here - let the functions manage loops as needed
     
     # Process specific event if provided in command line
     if all([args.event_id, args.schema, args.region, args.token]):
@@ -1719,15 +1942,7 @@ if __name__ == "__main__":
         if failure_count > 0:
             logger.warning("Some events failed to process, check logs for details")
             sys.exit(1)
-            
-    # Clean up event loop
-    try:
-        pending = asyncio.all_tasks(loop)
-        if pending:
-            loop.run_until_complete(asyncio.gather(*pending))
-    except Exception as e:
-        logger.debug(f"Error cleaning up event loop: {e}")
-    finally:
-        # Exit with success
-        logger.info("Processing completed successfully")
-        sys.exit(0) 
+    
+    # No need to clean up any event loops here since we're not creating any at the global level
+    logger.info("Processing completed successfully")
+    sys.exit(0) 
