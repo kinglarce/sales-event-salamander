@@ -79,7 +79,16 @@ class DataProvider:
         try:
             query = self._read_sql_file('get_age_group_data.sql')
             results = self.db.execute_query(query)
-            return pd.DataFrame(results, columns=['ticket_group', 'age_range', 'count'])
+            
+            # Update to handle all 6 columns from the SQL query
+            return pd.DataFrame(results, columns=[
+                'ticket_group', 
+                'age_range', 
+                'count', 
+                'ticket_event_day', 
+                'display_ticket_group',
+                'ticket_category'  # Add the new ticket_category column
+            ])
         except Exception as e:
             logger.error(f"Error getting age group data: {e}")
             return pd.DataFrame()
@@ -308,10 +317,18 @@ class SlackService:
             return False
 
         try:
-            # Group ticket groups by category
-            singles = [g for g in df['ticket_group'].unique() if 'DOUBLES' not in g and 'RELAY' not in g]
-            doubles = [g for g in df['ticket_group'].unique() if 'DOUBLES' in g]
-            relays = [g for g in df['ticket_group'].unique() if 'RELAY' in g]
+            # Define the category order
+            category_order = ['single', 'double', 'relay', 'corporate_relay']
+            
+            # Order tickets by category and then by day
+            singles = sorted(df[df['ticket_category'] == 'single']['display_ticket_group'].unique(), 
+                            key=lambda x: ('SATURDAY' in x, 'SUNDAY' in x, 'FRIDAY' not in x and 'SATURDAY' not in x and 'SUNDAY' not in x, x))
+            doubles = sorted(df[df['ticket_category'] == 'double']['display_ticket_group'].unique(),
+                            key=lambda x: ('SATURDAY' in x, 'SUNDAY' in x, 'FRIDAY' not in x and 'SATURDAY' not in x and 'SUNDAY' not in x, x))
+            # Group relays and corporate relays together but keep the ordering
+            relays = sorted(df[(df['ticket_category'] == 'relay') | 
+                              (df['ticket_category'] == 'corporate_relay')]['display_ticket_group'].unique(),
+                           key=lambda x: ('SATURDAY' in x, 'SUNDAY' in x, 'FRIDAY' not in x and 'SATURDAY' not in x and 'SUNDAY' not in x, x))
 
             blocks = []
             icon_mapping = self._load_icon_mapping()
@@ -325,7 +342,7 @@ class SlackService:
                 }
             })
 
-            # Process each category separately
+            # Process categories in the specified order
             for category_groups in [singles, doubles, relays]:
                 if category_groups:
                     # Process groups in pairs
@@ -393,9 +410,14 @@ class SlackService:
             }
         })
         
-        groups = df['ticket_group'].unique()
-        for i in range(0, len(groups), 2):
-            batch_groups = groups[i:i+2]
+        # Order display groups by day (Friday, Saturday, Sunday)
+        display_groups = sorted(
+            df['display_ticket_group'].unique(),
+            key=lambda x: ('SATURDAY' in x, 'SUNDAY' in x, 'FRIDAY' not in x and 'SATURDAY' not in x and 'SUNDAY' not in x, x)
+        )
+        
+        for i in range(0, len(display_groups), 2):
+            batch_groups = display_groups[i:i+2]
             table_text = self._create_table_text(df, batch_groups)
             
             blocks.append({
@@ -406,7 +428,7 @@ class SlackService:
                 }
             })
             
-            if i + 2 < len(groups):
+            if i + 2 < len(display_groups):
                 blocks.append({"type": "divider"})
         
         return blocks
@@ -418,35 +440,35 @@ class SlackService:
         except (FileNotFoundError, json.JSONDecodeError):
             return {"default": "🎟️"}
 
-    def _create_table_text(self, df: pd.DataFrame, groups: List[str]) -> str:
+    def _create_table_text(self, df: pd.DataFrame, display_groups: List[str]) -> str:
         """Create formatted table text for Slack message"""
         table_text = "```\n"
         
         # Headers
-        for group in groups:
-            table_text += f"{group:<35} | "
+        for display_group in display_groups:
+            table_text += f"{display_group:<35} | "
         table_text = table_text.rstrip(" | ") + "\n"
         
         # Separator
-        for _ in groups:
+        for _ in display_groups:
             table_text += f"{'-'*35} | "
         table_text = table_text.rstrip(" | ") + "\n"
         
         # Get appropriate age ranges based on first group's category
-        first_group = groups[0]
-        if 'DOUBLES' in first_group:
-            age_ranges = ['U29', '30-39', '40-49', '50-59', '60-69', '70+', 'Incomplete', 'Total']
-        elif 'RELAY' in first_group:
-            age_ranges = ['U40', '40+', 'Incomplete', 'Total']
-        else:  # Singles
+        first_group_data = df[df['display_ticket_group'] == display_groups[0]]
+        if not first_group_data.empty:
+            category = first_group_data['ticket_category'].iloc[0]
+            age_ranges = self._get_age_ranges_for_category(category)
+        else:
+            # Fallback to default singles ranges
             age_ranges = ['U24', '25-29', '30-34', '35-39', '40-44', '45-49', 
                          '50-54', '55-59', '60-64', '65-69', '70+', 'Incomplete', 'Total']
         
         # Data rows
         for age_range in age_ranges:
             line = ""
-            for group in groups:
-                row = df[(df['ticket_group'] == group) & (df['age_range'] == age_range)]
+            for display_group in display_groups:
+                row = df[(df['display_ticket_group'] == display_group) & (df['age_range'] == age_range)]
                 count = row['count'].values[0] if not row.empty else 0
                 line += f"{age_range:<15} {count:>19} | "
             table_text += line.rstrip(" | ") + "\n"
@@ -454,11 +476,11 @@ class SlackService:
         table_text += "```"
         return table_text
 
-    def _get_age_ranges_for_category(self, df: pd.DataFrame, group: str) -> List[str]:
+    def _get_age_ranges_for_category(self, category: str) -> List[str]:
         """Get appropriate age ranges based on ticket category"""
-        if 'DOUBLES' in group:
+        if category == 'double':
             return ['U29', '30-39', '40-49', '50-59', '60-69', '70+', 'Incomplete', 'Total']
-        elif 'RELAY' in group:
+        elif category == 'relay' or category == 'corporate_relay':
             return ['U40', '40+', 'Incomplete', 'Total']
         else:  # Singles
             return ['U24', '25-29', '30-34', '35-39', '40-44', '45-49', 
@@ -469,11 +491,14 @@ class ExcelGenerator:
     
     @staticmethod
     def get_age_ranges_for_category(category: str) -> List[str]:
-        if 'DOUBLES' in category:
+        # Convert category string to lowercase for consistent comparison
+        category_lower = category.lower()
+        
+        if 'doubles' in category_lower or category_lower == 'double':
             return ['U29', '30-39', '40-49', '50-59', '60-69', '70+', 'Incomplete', 'Total']
-        elif 'RELAY' in category:
+        elif 'relay' in category_lower or category_lower == 'relay':
             return ['U40', '40+', 'Incomplete', 'Total']
-        else:  # Singles
+        else:  # Singles or default
             return ['U24', '25-29', '30-34', '35-39', '40-44', '45-49', 
                     '50-54', '55-59', '60-64', '65-69', '70+', 'Incomplete', 'Total']
     
@@ -563,34 +588,42 @@ class ExcelGenerator:
         worksheet.write('A2', f'Event Commence Date: {start_date} - {end_date}', date_format)
         worksheet.write('A3', f'Last updated: {current_time.strftime("%d %B %Y %I:%M%p")} HKT', date_format)
         
-        # Get unique ticket groups and age ranges
-        ticket_groups = sorted(df['ticket_group'].unique())
-        
         current_row = 4
         max_col = 0
         
-        # Define categories and their ticket groups
-        categories = {
-            'SINGLES': ['HYROX MEN', 'HYROX WOMEN', 'HYROX PRO MEN', 'HYROX PRO WOMEN',
-                         'HYROX ADAPTIVE MEN', 'HYROX ADAPTIVE WOMEN'],
-            'DOUBLES': ['HYROX DOUBLES MEN', 'HYROX DOUBLES WOMEN', 'HYROX DOUBLES MIXED',
-                       'HYROX PRO DOUBLES MEN', 'HYROX PRO DOUBLES WOMEN'],
-            'RELAY': ['HYROX MENS RELAY', 'HYROX WOMENS RELAY', 'HYROX MIXED RELAY'],
-            'CORPORATE RELAY': ['HYROX MENS CORPORATE RELAY', 'HYROX WOMENS CORPORATE RELAY',
-                              'HYROX MIXED CORPORATE RELAY']
+        # Define category mappings
+        category_display_names = {
+            'single': 'SINGLES',
+            'double': 'DOUBLES',
+            'relay': 'RELAY',
+            'corporate_relay': 'CORPORATE RELAY'
         }
-
-        # Write data for each category
-        for category, groups in categories.items():
-            existing_groups = [g for g in groups if g in ticket_groups]
-            if not existing_groups:
+        
+        # Define the order of categories
+        category_order = ['single', 'double', 'relay', 'corporate_relay']
+        
+        # Process each category in the specific order
+        for category in category_order:
+            if category not in df['ticket_category'].unique():
+                continue
+                
+            # Get display name for the category
+            category_display = category_display_names.get(category, category.upper())
+            
+            # Filter display groups for this category and sort them by day (Friday, Saturday, Sunday)
+            category_display_groups = sorted(
+                df[df['ticket_category'] == category]['display_ticket_group'].unique(),
+                key=lambda x: ('SATURDAY' in x, 'SUNDAY' in x, 'FRIDAY' not in x and 'SATURDAY' not in x and 'SUNDAY' not in x, x)
+            )
+            
+            if not category_display_groups:
                 continue
             
             # Get appropriate age ranges for this category
-            age_ranges = self.get_age_ranges_for_category(category)
+            age_ranges = self.get_age_ranges_for_category(category_display)
                 
             # Write category header
-            worksheet.merge_range(current_row, 0, current_row, len(age_ranges), category, section_format)
+            worksheet.merge_range(current_row, 0, current_row, len(age_ranges), category_display, section_format)
             current_row += 1
             
             # Write age range headers
@@ -600,10 +633,10 @@ class ExcelGenerator:
             current_row += 1
             
             # Write data for each group
-            for group in existing_groups:
-                worksheet.write(current_row, 0, group, category_format)
+            for display_group in category_display_groups:
+                worksheet.write(current_row, 0, display_group, category_format)
                 for col, age_range in enumerate(age_ranges, 1):
-                    count = df[(df['ticket_group'] == group) & 
+                    count = df[(df['display_ticket_group'] == display_group) & 
                              (df['age_range'] == age_range)]['count'].values
                     value = count[0] if len(count) > 0 else 0
                     format_to_use = total_format if age_range == 'Total' else None
