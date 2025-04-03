@@ -2,6 +2,7 @@ WITH base_names AS (
     SELECT
         t.transaction_id,
         t.ticket_name,
+        ts.ticket_event_day,
         t.age,
         ts.ticket_category,
         CASE 
@@ -18,6 +19,7 @@ ticket_data AS (
     SELECT
         transaction_id,
         ticket_name,
+        ticket_event_day,
         base_name,
         ticket_category,
         age,
@@ -54,6 +56,7 @@ categorized_tickets AS (
     SELECT 
         transaction_id,
         ticket_group,
+        ticket_event_day,
         ticket_name,
         age,
         CASE 
@@ -69,6 +72,7 @@ categorized_tickets AS (
     FROM ticket_data
     WHERE transaction_id IS NOT NULL
         AND ticket_group = :ticket_group
+        AND ticket_event_day = :event_day
 ),
 
 -- Handle doubles pairing
@@ -76,6 +80,7 @@ doubles_pairs AS (
     SELECT 
         transaction_id,
         ticket_group,
+        ticket_event_day,
         ROW_NUMBER() OVER (
             PARTITION BY transaction_id, 
             CASE WHEN ticket_type = 'MEMBER' THEN 'MEMBER' ELSE 'MAIN' END
@@ -94,6 +99,7 @@ relay_teams AS (
         SELECT 
             transaction_id,
             ticket_group,
+            ticket_event_day,
             ticket_name,
             age,
             ticket_type,
@@ -115,6 +121,7 @@ relay_teams AS (
     SELECT 
         t1.transaction_id,
         t1.ticket_group,
+        t1.ticket_event_day,
         t1.ticket_name as main_ticket,
         t1.age as main_age,
         STRING_AGG(t2.ticket_name, ',' ORDER BY t2.member_seq) as member_tickets,
@@ -126,12 +133,14 @@ relay_teams AS (
     LEFT JOIN numbered_tickets t2 ON 
         t1.transaction_id = t2.transaction_id 
         AND t1.ticket_group = t2.ticket_group
+        AND t1.ticket_event_day = t2.ticket_event_day
         AND t2.ticket_type = 'MEMBER'
         AND t2.member_seq BETWEEN ((t1.ticket_seq - 1) * 3) + 1 AND (t1.ticket_seq * 3)
     WHERE t1.ticket_type = 'MAIN'
     GROUP BY 
         t1.transaction_id,
         t1.ticket_group,
+        t1.ticket_event_day,
         t1.ticket_name,
         t1.age,
         t1.ticket_seq
@@ -143,6 +152,7 @@ final_groups AS (
     SELECT 
         d1.transaction_id,
         d1.ticket_group,
+        d1.ticket_event_day,
         d1.ticket_name as member1_ticket,
         d2.ticket_name as member2_ticket,
         d1.age as member1_age,
@@ -162,6 +172,7 @@ final_groups AS (
     LEFT JOIN doubles_pairs d2 ON 
         d1.transaction_id = d2.transaction_id AND
         d1.pair_number = d2.pair_number AND
+        d1.ticket_event_day = d2.ticket_event_day AND
         d1.ticket_type = 'MAIN' AND 
         d2.ticket_type = 'MEMBER'
     WHERE d1.ticket_type = 'MAIN'
@@ -172,6 +183,7 @@ final_groups AS (
     SELECT 
         transaction_id,
         ticket_group,
+        ticket_event_day,
         main_ticket as member1_ticket,
         member_tickets as member2_ticket,
         main_age as member1_age,
@@ -195,6 +207,7 @@ final_groups AS (
     SELECT 
         transaction_id,
         ticket_group,
+        ticket_event_day,
         ticket_name as member1_ticket,
         NULL as member2_ticket,
         age as member1_age,
@@ -216,6 +229,7 @@ group_validation AS (
     SELECT 
         transaction_id,
         ticket_group,
+        ticket_event_day,
         category_type,
         group_avg_age,
         is_incomplete,
@@ -232,6 +246,7 @@ paired_entries AS (
     SELECT 
         transaction_id,
         ticket_group,
+        ticket_event_day,
         category_type,
         group_avg_age as pair_avg_age,
         is_incomplete,
@@ -243,6 +258,7 @@ paired_entries AS (
 transaction_status AS (
     SELECT 
         ticket_group,
+        ticket_event_day,
         transaction_id,
         category_type,
         expected_count as required_members,
@@ -259,6 +275,7 @@ transaction_status AS (
 group_counts AS (
     SELECT
         ticket_group,
+        ticket_event_day,
         -- Complete entries in age range
         SUM(CASE 
             WHEN NOT is_incomplete AND in_age_range
@@ -277,7 +294,7 @@ group_counts AS (
         COUNT(DISTINCT CASE WHEN is_incomplete THEN transaction_id END) as incomplete_transactions,
         COUNT(DISTINCT CASE WHEN NOT is_incomplete AND in_age_range THEN transaction_id END) as complete_transactions
     FROM transaction_status
-    GROUP BY ticket_group
+    GROUP BY ticket_group, ticket_event_day
 )
 
 -- Final output with detailed information
@@ -290,6 +307,14 @@ SELECT
     END as count,
     COALESCE(total_count, 0) as total,
     incomplete_transactions,
-    complete_transactions
+    complete_transactions,
+    -- Add standardized ticket category
+    CASE
+        WHEN :ticket_group LIKE '%DOUBLES%' THEN 'double'
+        WHEN :ticket_group LIKE '%RELAY%' AND :ticket_group LIKE '%CORPORATE%' THEN 'corporate_relay'
+        WHEN :ticket_group LIKE '%RELAY%' THEN 'relay'
+        ELSE 'single'
+    END as ticket_category
 FROM group_counts
-WHERE ticket_group = :ticket_group;
+WHERE ticket_group = :ticket_group
+AND ticket_event_day = :event_day;
