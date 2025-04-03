@@ -178,14 +178,14 @@ class DataProvider:
             # 2. Get team member counts
             team_query = self._read_sql_file('get_team_member_counts.sql')
             team_results = self.db.execute_query(team_query)
-            print('hey result : ', team_results)
             team_counts = [
                 {
                     'main_ticket_name': row[0],
                     'main_count': row[1],
                     'member_count': row[2],
                     'ticket_category': row[3],
-                    'status': row[4]
+                    'event_day': row[4],
+                    'status': row[5]
                 }
                 for row in team_results
             ]
@@ -198,7 +198,8 @@ class DataProvider:
                     'ticket_name': row[0],
                     'gender': row[1],
                     'count': row[2],
-                    'details': row[3]
+                    'event_day': row[3],
+                    'details': row[4]
                 }
                 for row in gender_results
             ]
@@ -843,6 +844,14 @@ class ExcelGenerator:
             'border': 1,
             'bg_color': '#FFD7D7'  # Light red background for warnings
         })
+        category_format = workbook.add_format({
+            'bold': True, 
+            'text_wrap': True, 
+            'valign': 'top', 
+            'border': 1, 
+            'align': 'left',
+            'bg_color': '#DFE4EC'
+        })
         
         # Write event information
         event_name = event_info.get('name', 'N/A')
@@ -872,7 +881,7 @@ class ExcelGenerator:
         current_row += 2
         
         # 2. Team Member Count Verification
-        worksheet.merge_range(current_row, left_col, current_row, 4, 'Team Member Count Verification', section_format)
+        worksheet.merge_range(current_row, left_col, current_row, 5, 'Team Member Count Verification', section_format)
         current_row += 1
         
         # Headers
@@ -880,25 +889,70 @@ class ExcelGenerator:
         worksheet.write(current_row, left_col + 1, 'Main Count', header_format)
         worksheet.write(current_row, left_col + 2, 'Member Count', header_format)
         worksheet.write(current_row, left_col + 3, 'Category', header_format)
-        worksheet.write(current_row, left_col + 4, 'Status', header_format)
+        worksheet.write(current_row, left_col + 4, 'Event Day', header_format)
+        worksheet.write(current_row, left_col + 5, 'Status', header_format)
         current_row += 1
         
-        for team_count in ticket_status_data['team_counts']:
+        # Group team counts by category and event day for better organization
+        # Define category order
+        category_order = ['single', 'double', 'relay', 'corporate_relay']
+        # Define day order
+        day_order = {'FRIDAY': 0, 'SATURDAY': 1, 'SUNDAY': 2, 'NONE': 3}
+        
+        # Sort team counts by category and then by event day
+        sorted_team_counts = sorted(
+            ticket_status_data['team_counts'],
+            key=lambda x: (
+                category_order.index(x['ticket_category']) if x['ticket_category'] in category_order else 999,
+                day_order.get(x['event_day'], 999),
+                x['main_ticket_name']
+            )
+        )
+        
+        # Group by category for better visual separation
+        current_category = None
+        current_day = None
+        
+        for team_count in sorted_team_counts:
+            # Add a visual separator between categories
+            if current_category != team_count['ticket_category']:
+                if current_category is not None:
+                    current_row += 0  # To add space between categories
+                current_category = team_count['ticket_category']
+                current_day = None
+                
+                # Write category header
+                category_display = team_count['ticket_category'].upper()
+                worksheet.merge_range(current_row, left_col, current_row, left_col + 5, category_display, section_format)
+                current_row += 1
+            
+            # Add visual separator between days within a category
+            if current_day != team_count['event_day']:
+                current_day = team_count['event_day']
+                
+                # Write the event day as a subheader if it's not NONE
+                if current_day != 'NONE':
+                    worksheet.merge_range(current_row, left_col, current_row, left_col + 5, 
+                                        f"{current_category.upper()} - {current_day}", category_format)
+                    current_row += 1
+            
             worksheet.write(current_row, left_col, team_count['main_ticket_name'], data_format)
             worksheet.write(current_row, left_col + 1, team_count['main_count'], number_format)
             worksheet.write(current_row, left_col + 2, team_count['member_count'], number_format)
             worksheet.write(current_row, left_col + 3, team_count['ticket_category'].upper(), data_format)
+            worksheet.write(current_row, left_col + 4, team_count['event_day'], data_format)
             
             # Status formatting
             format_to_use = warning_format if team_count['status'] != 'OK' else data_format
-            worksheet.write(current_row, left_col + 4, team_count['status'], format_to_use)
+            worksheet.write(current_row, left_col + 5, team_count['status'], format_to_use)
             current_row += 1
         
         # Set column widths
         worksheet.set_column(left_col, left_col, 40)      # Main ticket name
         worksheet.set_column(left_col + 1, left_col + 2, 15)  # Count columns
         worksheet.set_column(left_col + 3, left_col + 3, 12)  # Category
-        worksheet.set_column(left_col + 4, left_col + 4, 12)  # Status
+        worksheet.set_column(left_col + 4, left_col + 4, 12)  # Event Day
+        worksheet.set_column(left_col + 5, left_col + 5, 12)  # Status
         
         current_row += 2
         
@@ -906,16 +960,42 @@ class ExcelGenerator:
         worksheet.merge_range(current_row, left_col, current_row, 2, 'Gender Mismatch Report', section_format)
         current_row += 1
         
-        # Summary table
+        # Headers for summary table
         worksheet.write(current_row, left_col, 'Ticket Type', header_format)
         worksheet.write(current_row, left_col + 1, 'Gender', header_format)
         worksheet.write(current_row, left_col + 2, 'Count', header_format)
+        # worksheet.write(current_row, left_col + 3, 'Event Day', header_format)
         current_row += 1
         
-        for mismatch in ticket_status_data['gender_mismatches']:
+        # Sort gender mismatches by event day for better organization
+        sorted_gender_mismatches = sorted(
+            ticket_status_data['gender_mismatches'],
+            key=lambda x: (
+                day_order.get(x['event_day'], 999),
+                x['ticket_name']
+            )
+        )
+        
+        # Group gender mismatches by event day
+        current_mismatch_day = None
+        
+        for mismatch in sorted_gender_mismatches:
+            # Add visual separator between days
+            if current_mismatch_day != mismatch['event_day']:
+                if current_mismatch_day is not None:
+                    current_row += 0  # To add space between days
+                current_mismatch_day = mismatch['event_day']
+                
+                # Write the event day as a subheader if it's not NONE
+                if current_mismatch_day != 'NONE':
+                    worksheet.merge_range(current_row, left_col, current_row, left_col + 2, 
+                                        f"GENDER MISMATCHES - {current_mismatch_day}", category_format)
+                    current_row += 1
+                
             worksheet.write(current_row, left_col, mismatch['ticket_name'], warning_format)
             worksheet.write(current_row, left_col + 1, mismatch['gender'], warning_format)
             worksheet.write(current_row, left_col + 2, mismatch['count'], warning_format)
+            # worksheet.write(current_row, left_col + 3, mismatch['event_day'], warning_format)
             current_row += 1
         
         current_row += 2
@@ -928,14 +1008,31 @@ class ExcelGenerator:
         worksheet.write(current_row, left_col + 1, 'Ticket Type', header_format)
         worksheet.write(current_row, left_col + 2, 'Category', header_format)
         worksheet.write(current_row, left_col + 3, 'Gender', header_format)
+        # worksheet.write(current_row, left_col + 4, 'Event Day', header_format)
         current_row += 1
         
-        for mismatch in ticket_status_data['gender_mismatches']:
+        # Reset for detailed report
+        current_mismatch_day = None
+        
+        for mismatch in sorted_gender_mismatches:
+            # Add visual separator between days in detailed report
+            if current_mismatch_day != mismatch['event_day']:
+                if current_mismatch_day is not None:
+                    current_row += 0  # To add space between days
+                current_mismatch_day = mismatch['event_day']
+                
+                # Write the event day as a subheader if it's not NONE
+                if current_mismatch_day != 'NONE':
+                    worksheet.merge_range(current_row, left_col, current_row, left_col + 3,
+                                        f"GENDER MISMATCHES DETAILS - {current_mismatch_day}", category_format)
+                    current_row += 1
+            
             for detail in mismatch['details']:
                 worksheet.write(current_row, left_col, detail['barcode'], warning_format)
                 worksheet.write(current_row, left_col + 1, mismatch['ticket_name'], warning_format)
                 worksheet.write(current_row, left_col + 2, detail['category_name'], warning_format)
                 worksheet.write(current_row, left_col + 3, mismatch['gender'], warning_format)
+                # worksheet.write(current_row, left_col + 4, mismatch['event_day'], warning_format)
                 current_row += 1
         
         current_row += 2
@@ -1031,7 +1128,8 @@ class ExcelGenerator:
         worksheet.set_column(left_col, left_col, 40)  # Main ticket name
         worksheet.set_column(left_col + 1, left_col + 2, 15)  # Count columns
         worksheet.set_column(left_col + 3, left_col + 3, 12)  # Category
-        worksheet.set_column(left_col + 4, left_col + 4, 12)  # Status
+        worksheet.set_column(left_col + 4, left_col + 4, 12)  # Event Day
+        worksheet.set_column(left_col + 5, left_col + 5, 12)  # Status
         
         # Separator column
         worksheet.set_column(8, 8, 2)  # Small gap between left and right sections
