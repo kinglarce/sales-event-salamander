@@ -79,7 +79,7 @@ class AgeGroupIngester:
                 ("70+", 70, 999),
                 ("Incomplete", None, None),
             ]
-        elif category == "relay":
+        elif category == "relay" or category == "corporate_relay":
             return [
                 ("U40", 0, 39),
                 ("40+", 40, 999),
