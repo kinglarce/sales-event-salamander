@@ -5,12 +5,7 @@ WITH main_tickets AS (
         tt.ticket_category,
         -- Simpler base_name extraction, just remove day part
         SPLIT_PART(LOWER(tt.ticket_name), ' | ', 1) as base_name,
-        CASE 
-            WHEN UPPER(tt.ticket_name) LIKE '%FRIDAY%' THEN 'FRIDAY'
-            WHEN UPPER(tt.ticket_name) LIKE '%SATURDAY%' THEN 'SATURDAY'
-            WHEN UPPER(tt.ticket_name) LIKE '%SUNDAY%' THEN 'SUNDAY'
-            ELSE 'NONE'
-        END as event_day
+        UPPER(tt.ticket_event_day) as event_day
     FROM {SCHEMA}.ticket_type_summary tt
     WHERE tt.ticket_category IN ('double', 'relay', 'corporate_relay')
     AND NOT (
@@ -34,17 +29,13 @@ member_tickets AS (
             ELSE
                 LOWER(SPLIT_PART(original_name, ' | ', 1))
         END as base_name,
-        CASE 
-            WHEN UPPER(original_name) LIKE '%FRIDAY%' THEN 'FRIDAY'
-            WHEN UPPER(original_name) LIKE '%SATURDAY%' THEN 'SATURDAY'
-            WHEN UPPER(original_name) LIKE '%SUNDAY%' THEN 'SUNDAY'
-            ELSE 'NONE'
-        END as event_day
+        UPPER(tt_event_day) as event_day
     FROM (
             SELECT 
                 tt.ticket_name as original_name,
                 tt.ticket_name as member_ticket_name,
-                tt.total_count as member_count
+                tt.total_count as member_count,
+                tt.ticket_event_day as tt_event_day
             FROM {SCHEMA}.ticket_type_summary tt
             WHERE (tt.ticket_name LIKE '%ATHLETE 2%'
                 OR tt.ticket_name LIKE '%ATHLETE2%'
