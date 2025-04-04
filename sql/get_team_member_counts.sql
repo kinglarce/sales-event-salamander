@@ -3,14 +3,16 @@ WITH main_tickets AS (
         tt.ticket_name,
         tt.total_count as main_count,
         tt.ticket_category,
-        -- Simpler base_name extraction, just remove day part
-        SPLIT_PART(LOWER(tt.ticket_name), ' | ', 1) as base_name,
-        CASE 
-            WHEN UPPER(tt.ticket_name) LIKE '%FRIDAY%' THEN 'FRIDAY'
-            WHEN UPPER(tt.ticket_name) LIKE '%SATURDAY%' THEN 'SATURDAY'
-            WHEN UPPER(tt.ticket_name) LIKE '%SUNDAY%' THEN 'SUNDAY'
-            ELSE 'NONE'
-        END as event_day
+        -- Better base_name extraction to handle different formats
+        CASE
+            WHEN tt.ticket_name LIKE '%|%' THEN 
+                -- For tickets with format "X | Y"
+                REGEXP_REPLACE(LOWER(SPLIT_PART(tt.ticket_name, ' | ', 1)), '[\s]*$', '')
+            ELSE 
+                -- For tickets without pipe character
+                LOWER(tt.ticket_name)
+        END as base_name,
+        UPPER(tt.ticket_event_day) as event_day
     FROM {SCHEMA}.ticket_type_summary tt
     WHERE tt.ticket_category IN ('double', 'relay', 'corporate_relay')
     AND NOT (
@@ -25,32 +27,40 @@ member_tickets AS (
         original_name,
         member_ticket_name,
         member_count,
-        -- For doubles, we need to match exactly with their main counterpart
+        -- Improved base_name extraction for member tickets
         CASE 
+            -- Handle Hong Kong style with pipe
+            WHEN LOWER(original_name) LIKE '%athlete 2%' AND original_name LIKE '%|%' THEN
+                REGEXP_REPLACE(LOWER(SPLIT_PART(original_name, ' | ', 1)), ' athlete 2$', '')
+            WHEN LOWER(original_name) LIKE '%team member%' AND original_name LIKE '%|%' THEN
+                REGEXP_REPLACE(LOWER(SPLIT_PART(original_name, ' | ', 1)), ' team member$', '')
+            -- Handle Bangkok style without pipe
             WHEN LOWER(original_name) LIKE '%athlete 2%' THEN
-                REPLACE(LOWER(SPLIT_PART(original_name, ' | ', 1)), ' athlete 2', '')
+                REGEXP_REPLACE(LOWER(original_name), ' \\(athlete 2\\)$', '')
             WHEN LOWER(original_name) LIKE '%team member%' THEN
-                REPLACE(LOWER(SPLIT_PART(original_name, ' | ', 1)), ' team member', '')
+                REGEXP_REPLACE(LOWER(original_name), ' \\(team member\\)$', '')
+            -- Handle spaces in ATHLETE2 format
+            WHEN LOWER(original_name) LIKE '%athlete2%' THEN
+                REGEXP_REPLACE(LOWER(original_name), ' athlete2$', '')
             ELSE
-                LOWER(SPLIT_PART(original_name, ' | ', 1))
+                LOWER(original_name)
         END as base_name,
-        CASE 
-            WHEN UPPER(original_name) LIKE '%FRIDAY%' THEN 'FRIDAY'
-            WHEN UPPER(original_name) LIKE '%SATURDAY%' THEN 'SATURDAY'
-            WHEN UPPER(original_name) LIKE '%SUNDAY%' THEN 'SUNDAY'
-            ELSE 'NONE'
-        END as event_day
+        UPPER(tt_event_day) as event_day
     FROM (
             SELECT 
                 tt.ticket_name as original_name,
                 tt.ticket_name as member_ticket_name,
-                tt.total_count as member_count
+                tt.total_count as member_count,
+                tt.ticket_event_day as tt_event_day
             FROM {SCHEMA}.ticket_type_summary tt
-            WHERE (tt.ticket_name LIKE '%ATHLETE 2%'
+            WHERE (
+                tt.ticket_name LIKE '%ATHLETE 2%'
                 OR tt.ticket_name LIKE '%ATHLETE2%'
-                OR tt.ticket_name LIKE '%TEAM MEMBER%')
-                -- Make sure we're only including double/relay tickets
-                AND tt.ticket_category IN ('double', 'relay', 'corporate_relay')
+                OR tt.ticket_name LIKE '%TEAM MEMBER%'
+                OR tt.ticket_name LIKE '% MEMBER%'
+            )
+            -- Make sure we're only including double/relay tickets
+            AND tt.ticket_category IN ('double', 'relay', 'corporate_relay')
         ) as member_tickets_temp
 ),
 -- Debug view to inspect base name matching
@@ -65,7 +75,8 @@ matching_debug AS (
         t.member_count
     FROM main_tickets m
     LEFT JOIN member_tickets t ON 
-        LOWER(t.base_name) = LOWER(m.base_name)
+        -- Use similarity matching for better results
+        t.base_name ILIKE '%' || m.base_name || '%'
         AND t.event_day = m.event_day
 )
 SELECT 
@@ -82,7 +93,8 @@ SELECT
     END as status
 FROM main_tickets m
 LEFT JOIN member_tickets t ON 
-    LOWER(t.base_name) = LOWER(m.base_name)
+    -- Use similarity matching for better results
+    t.base_name ILIKE '%' || m.base_name || '%'
     AND t.event_day = m.event_day
 GROUP BY 
     m.ticket_name,
