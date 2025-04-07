@@ -52,9 +52,10 @@ class DatabaseManager:
 class DataProvider:
     """Provides data from the database"""
     
-    def __init__(self, db_manager: DatabaseManager):
+    def __init__(self, db_manager: DatabaseManager, is_breakdown_by_day_enabled: bool):
         self.db = db_manager
         self.schema = db_manager.schema
+        self.is_breakdown_by_day_enabled = is_breakdown_by_day_enabled
         
     def _read_sql_file(self, filename: str) -> str:
         """Read SQL file and replace schema placeholder"""
@@ -81,14 +82,17 @@ class DataProvider:
             results = self.db.execute_query(query)
             
             # Update to handle all 6 columns from the SQL query
-            return pd.DataFrame(results, columns=[
+            df = pd.DataFrame(results, columns=[
                 'ticket_group', 
                 'age_range', 
                 'count', 
                 'ticket_event_day', 
                 'display_ticket_group',
-                'ticket_category'  # Add the new ticket_category column
+                'ticket_category'
             ])
+            if self.is_breakdown_by_day_enabled:
+                df['display_ticket_group'] = (df['ticket_group'] + ' | ' + df['ticket_event_day']).str.upper()
+            return df
         except Exception as e:
             logger.error(f"Error getting age group data: {e}")
             return pd.DataFrame()
@@ -490,6 +494,9 @@ class SlackService:
 class ExcelGenerator:
     """Handles Excel report generation"""
     
+    def __init__(self, is_breakdown_by_day_enabled: bool):
+        self.is_breakdown_by_day_enabled = is_breakdown_by_day_enabled
+    
     @staticmethod
     def get_age_ranges_for_category(category: str) -> List[str]:
         # Convert category string to lowercase for consistent comparison
@@ -699,7 +706,7 @@ class ExcelGenerator:
         worksheet.write(0, 0, f'Event: {event_name}', title_format)
         
         # Get data from DataProvider
-        data_provider = DataProvider(writer.db_manager)
+        data_provider = DataProvider(writer.db_manager, self.is_breakdown_by_day_enabled)
         
         # Left side content (starts at column 0)
         left_col = 0
@@ -808,6 +815,9 @@ class ExcelGenerator:
         workbook = writer.book
         worksheet = workbook.add_worksheet('Ticketing Status')
         
+        # Check if breakdown by day is enabled for this region
+        show_breakdown_by_day = self.is_breakdown_by_day_enabled
+        
         # Add formats
         title_format = workbook.add_format({
             'bold': True, 
@@ -858,7 +868,7 @@ class ExcelGenerator:
         worksheet.write(0, 0, f'Event: {event_name}', title_format)
         
         # Get data from DataProvider
-        data_provider = DataProvider(writer.db_manager)
+        data_provider = DataProvider(writer.db_manager, self.is_breakdown_by_day_enabled)
         ticket_status_data = data_provider.get_ticket_status_data()
         
         # Left side content
@@ -881,16 +891,24 @@ class ExcelGenerator:
         current_row += 2
         
         # 2. Team Member Count Verification
-        worksheet.merge_range(current_row, left_col, current_row, 5, 'Team Member Count Verification', section_format)
+        # Determine the range for the merge based on whether we show the event day
+        merge_end_col = 5 if show_breakdown_by_day else 4
+        worksheet.merge_range(current_row, left_col, current_row, merge_end_col, 'Team Member Count Verification', section_format)
         current_row += 1
         
-        # Headers
+        # Headers - conditionally add event day column
         worksheet.write(current_row, left_col, 'Main Ticket', header_format)
         worksheet.write(current_row, left_col + 1, 'Main Count', header_format)
         worksheet.write(current_row, left_col + 2, 'Member Count', header_format)
         worksheet.write(current_row, left_col + 3, 'Category', header_format)
-        worksheet.write(current_row, left_col + 4, 'Event Day', header_format)
-        worksheet.write(current_row, left_col + 5, 'Status', header_format)
+        
+        if show_breakdown_by_day:
+            worksheet.write(current_row, left_col + 4, 'Event Day', header_format)
+            status_col = left_col + 5
+        else:
+            status_col = left_col + 4
+            
+        worksheet.write(current_row, status_col, 'Status', header_format)
         current_row += 1
         
         # Group team counts by category and event day for better organization
@@ -923,16 +941,16 @@ class ExcelGenerator:
                 
                 # Write category header
                 category_display = team_count['ticket_category'].upper()
-                worksheet.merge_range(current_row, left_col, current_row, left_col + 5, category_display, section_format)
+                worksheet.merge_range(current_row, left_col, current_row, status_col, category_display, section_format)
                 current_row += 1
             
             # Add visual separator between days within a category
-            if current_day != team_count['event_day']:
+            if show_breakdown_by_day and current_day != team_count['event_day']:
                 current_day = team_count['event_day']
                 
                 # Write the event day as a subheader if it's not NONE
                 if current_day != 'NONE':
-                    worksheet.merge_range(current_row, left_col, current_row, left_col + 5, 
+                    worksheet.merge_range(current_row, left_col, current_row, status_col, 
                                         f"{current_category.upper()} - {current_day}", category_format)
                     current_row += 1
             
@@ -940,19 +958,25 @@ class ExcelGenerator:
             worksheet.write(current_row, left_col + 1, team_count['main_count'], number_format)
             worksheet.write(current_row, left_col + 2, team_count['member_count'], number_format)
             worksheet.write(current_row, left_col + 3, team_count['ticket_category'].upper(), data_format)
-            worksheet.write(current_row, left_col + 4, team_count['event_day'], data_format)
+            
+            if show_breakdown_by_day:
+                worksheet.write(current_row, left_col + 4, team_count['event_day'], data_format)
             
             # Status formatting
             format_to_use = warning_format if team_count['status'] != 'OK' else data_format
-            worksheet.write(current_row, left_col + 5, team_count['status'], format_to_use)
+            worksheet.write(current_row, status_col, team_count['status'], format_to_use)
             current_row += 1
         
         # Set column widths
         worksheet.set_column(left_col, left_col, 40)      # Main ticket name
         worksheet.set_column(left_col + 1, left_col + 2, 15)  # Count columns
         worksheet.set_column(left_col + 3, left_col + 3, 12)  # Category
-        worksheet.set_column(left_col + 4, left_col + 4, 12)  # Event Day
-        worksheet.set_column(left_col + 5, left_col + 5, 12)  # Status
+        
+        if show_breakdown_by_day:
+            worksheet.set_column(left_col + 4, left_col + 4, 12)  # Event Day
+            worksheet.set_column(left_col + 5, left_col + 5, 12)  # Status
+        else:
+            worksheet.set_column(left_col + 4, left_col + 4, 12)  # Status
         
         current_row += 2
         
@@ -964,7 +988,6 @@ class ExcelGenerator:
         worksheet.write(current_row, left_col, 'Ticket Type', header_format)
         worksheet.write(current_row, left_col + 1, 'Gender', header_format)
         worksheet.write(current_row, left_col + 2, 'Count', header_format)
-        # worksheet.write(current_row, left_col + 3, 'Event Day', header_format)
         current_row += 1
         
         # Sort gender mismatches by event day for better organization
@@ -1107,7 +1130,7 @@ class ExcelGenerator:
         current_row += 2
         
         # 3. Age Restricted Athletes (Under 16 or 16)
-        worksheet.merge_range(current_row, right_col, current_row, right_col + 3, 'Athletes Under 16 or 16', section_format)
+        worksheet.merge_range(current_row, right_col, current_row, right_col + 3, 'Athletes Under 16', section_format)
         current_row += 1
         
         worksheet.write(current_row, right_col, 'Barcode', header_format)
@@ -1158,9 +1181,15 @@ class Analytics:
         self.schema = schema
         self.region = region
         self.db_manager = DatabaseManager(schema)
-        self.data_provider = DataProvider(self.db_manager)
+        is_breakdown_by_day_enabled = self.is_breakdown_by_day_enabled(region)
+        self.data_provider = DataProvider(self.db_manager, is_breakdown_by_day_enabled)
         self.slack_service = SlackService(schema, region)
-        self.excel_generator = ExcelGenerator()
+        self.excel_generator = ExcelGenerator(is_breakdown_by_day_enabled)
+    
+    @staticmethod
+    def is_breakdown_by_day_enabled(region: str) -> bool:
+        """Check if summary_breakdown_day is enabled for the given region"""
+        return os.getenv(f'EVENT_CONFIGS__{region}__summary_breakdown_day', 'false').strip().lower() in ('true', '1')
     
     def process_analytics(self, send_slack: bool = False, generate_excel: bool = False) -> bool:
         """Process analytics with specified output options"""

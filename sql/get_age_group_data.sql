@@ -3,7 +3,7 @@ SELECT
     tag.age_range,
     tag.count,
     tag.ticket_event_day,
-    UPPER(CONCAT(tag.ticket_group, ' | ', tag.ticket_event_day)) AS display_ticket_group,
+    UPPER(CONCAT(tag.ticket_group)) AS display_ticket_group,
     tag.ticket_category
 FROM {SCHEMA}.ticket_age_groups tag
 LEFT JOIN {SCHEMA}.ticket_capacity_configs tc

@@ -20,6 +20,7 @@ WITH main_tickets AS (
             OR tt.ticket_name LIKE '%ATHLETE2%'
             OR tt.ticket_name LIKE '%TEAM MEMBER%'
             OR tt.ticket_name LIKE '%MEMBER%'
+            OR tt.ticket_name LIKE '%CHAMPIONSHIP%'
         )
     ),
 member_tickets AS (
