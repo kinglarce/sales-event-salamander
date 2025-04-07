@@ -163,6 +163,47 @@ class TicketDataProvider:
         except Exception as e:
             logger.error(f"Error getting detailed breakdown: {e}")
         return []
+        
+    def get_shop_category_breakdown(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Get breakdown of tickets by shop_category"""
+        try:
+            # Determine which SQL file to use
+            sql_shop_breakdown_day = 'sql/get_under_shop_breakdown_with_day.sql'
+            sql_shop_breakdown = 'sql/get_under_shop_breakdown.sql'
+            is_config_breakdown_exist =  os.getenv(f'EVENT_CONFIGS__{self.region}__summary_breakdown_day', 'false').strip().lower() in ('true', '1')
+            is_config_exclude_adaptive_sunday =  os.getenv(f'EVENT_CONFIGS__{self.region}__exclude_adaptive_sunday', 'false').strip().lower() in ('true', '1')
+            
+            # Use the day-specific SQL if configured
+            sql_file = sql_shop_breakdown_day if is_config_breakdown_exist else sql_shop_breakdown
+            
+            logger.info(f"Using shop category breakdown SQL: {sql_file}")
+            
+            # Read the SQL file for shop category breakdown
+            with open(sql_file, 'r') as file:
+                sql = file.read().format(SCHEMA=self.schema, EXCLUDE_ADAPTIVE_SUNDAY=is_config_exclude_adaptive_sunday)
+
+            # Execute query
+            results = self.db.execute_query(sql)
+
+            # Group results by shop_category
+            breakdown_by_category = {}
+            for row in results:
+                shop_category = row[0]
+                if shop_category not in breakdown_by_category:
+                    breakdown_by_category[shop_category] = []
+                
+                breakdown_by_category[shop_category].append({
+                    "ticket_group": row[1],
+                    "ticket_count": row[2],
+                    "ticket_volume": row[3],
+                    "formatted_total": row[4]
+                })
+
+            return breakdown_by_category
+
+        except Exception as e:
+            logger.error(f"Error getting shop category breakdown: {e}")
+            return {}
 
 class DataAnalyzer:
     """Handles data analysis and projections"""
@@ -336,6 +377,31 @@ class SlackReporter:
         table += "```"
         return table
     
+    def format_shop_category_table(self, shop_data: List[Dict[str, Any]]) -> str:
+        """Format shop category data into a Slack-friendly table"""
+        if not shop_data:
+            return ""
+
+        # Check if we have day-based data (contains '|' in ticket_group)
+        has_day_data = any('|' in str(item['ticket_group']) for item in shop_data)
+        
+        # Create table
+        table = "```\n"
+        if has_day_data:
+            # For day-based data, align more cleanly
+            table += f"{'Ticket Group':<50} | {'No. Pax':>12}\n"
+            table += f"{'-' * 50}-|-{'-' * 12}\n"
+        else:
+            table += f"{'Ticket Group':<50} | {'No. Pax':>12}\n"
+            table += f"{'-' * 50}-|-{'-' * 12}\n"
+        
+        # Add rows to the table
+        for item in shop_data:
+            table += f"{item['ticket_group']:<50} | {item['formatted_total']:>12}\n"
+        
+        table += "```"
+        return table
+    
     def get_adaptive_summary(self) -> List[Tuple[str, int]]:
         """Get adaptive ticket summary"""
         try:
@@ -353,7 +419,8 @@ class SlackReporter:
                    capacity_configs: Dict[str, str],
                    growth_data: Optional[Dict] = None, 
                    projections: Optional[pd.DataFrame] = None,
-                   projection_minutes: int = 3) -> bool:
+                   projection_minutes: int = 3,
+                   shop_category_breakdown: Optional[Dict[str, List[Dict[str, Any]]]] = None) -> bool:
         """Send a report to Slack with current summary and projections"""
         if not self.slack_client:
             logger.warning("Slack client not available. Report not sent.")
@@ -439,6 +506,50 @@ class SlackReporter:
                         "text": table_text
                     }
                 })
+            
+            # Add shop category breakdown if available
+            if shop_category_breakdown:
+                # Sort categories - PARTNERACCESS first, then HTCACCESS and other variants
+                def get_category_order(category):
+                    if 'partneraccess' in category.lower():
+                        return 1
+                    elif 'htcaccess' in category.lower():
+                        return 2
+                    else:
+                        return 999
+                        
+                sorted_categories = sorted(
+                    shop_category_breakdown.keys(), 
+                    key=get_category_order
+                )
+                
+                for category in sorted_categories:
+                    if not shop_category_breakdown[category]:
+                        continue
+                        
+                    blocks.append({"type": "divider"})
+                    
+                    # Format category display name
+                    category_display = category.upper()
+                    header_text = f"Secret Shop Redeemed Tickets Breakdown({category_display}):"
+                    
+                    blocks.append({
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"*{header_text}*\n"
+                        }
+                    })
+                    
+                    # Format shop category table
+                    shop_table = self.format_shop_category_table(shop_category_breakdown[category])
+                    blocks.append({
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": shop_table
+                        }
+                    })
             
             # Add growth data if enabled and available
             if os.getenv('ENABLE_GROWTH_ANALYSIS', 'false').lower() == 'true' and growth_data and growth_data.get('changes'):
@@ -590,14 +701,24 @@ class TicketAnalytics:
                 projection_df = self.analyzer.project_future_sales(historical_df, self.projection_minutes)
                 logger.info(f"Projection data calculated for {self.projection_minutes} minutes")
             
+            # Get detailed breakdown
+            detailed_breakdown = self.data_provider.get_detailed_breakdown()
+            logger.info(f"Detailed breakdown: {len(detailed_breakdown)} entries")
+            
+            # Get shop category breakdown
+            shop_category_breakdown = self.data_provider.get_shop_category_breakdown()
+            shop_categories = list(shop_category_breakdown.keys())
+            logger.info(f"Shop category breakdown for categories: {shop_categories}")
+            
             # Send to Slack
             success = self.reporter.send_report(
                 current_summary, 
-                self.data_provider.get_detailed_breakdown(),
+                detailed_breakdown,
                 capacity_configs,
                 growth_data, 
                 projection_df,
-                self.projection_minutes
+                self.projection_minutes,
+                shop_category_breakdown
             )
             logger.info(f"Slack report sent: {success}")
             

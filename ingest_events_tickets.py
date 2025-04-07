@@ -265,7 +265,6 @@ class DatabaseManager:
             conn.execute(text(f"""
                 -- Drop main tables
                 DROP TABLE IF EXISTS {self.schema}.ticket_summary CASCADE;
-                DROP TABLE IF EXISTS {self.schema}.ticket_type_summary CASCADE;
                 DROP TABLE IF EXISTS {self.schema}.tickets CASCADE;
                 DROP TABLE IF EXISTS {self.schema}.events CASCADE;
                 
