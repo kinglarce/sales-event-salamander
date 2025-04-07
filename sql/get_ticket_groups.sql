@@ -8,7 +8,7 @@ WITH ticket_data AS (
         END as base_name,
         ts.ticket_category
     FROM {SCHEMA}.tickets t
-    JOIN {SCHEMA}.ticket_type_summary ts 
+    JOIN {SCHEMA}.ticket_summary ts 
         ON t.ticket_type_id = ts.ticket_type_id
     WHERE ts.ticket_category NOT IN ('spectator', 'extra')
 ),

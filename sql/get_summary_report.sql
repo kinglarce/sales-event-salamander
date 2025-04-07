@@ -10,7 +10,7 @@ WITH group_summary AS (
         array_agg(ticket_type_id) as ticket_type_ids,
         array_agg(ticket_name) as ticket_names,
         SUM(total_count) as total_count
-    FROM {SCHEMA}.ticket_type_summary
+    FROM {SCHEMA}.ticket_summary
     WHERE 
         event_id = :event_id
         AND ticket_category <> 'extra'
@@ -35,7 +35,7 @@ SELECT
     array_agg(ticket_type_id) as ticket_type_ids,
     array_agg(ticket_name) as ticket_names,
     SUM(total_count) as total_count
-FROM {SCHEMA}.ticket_type_summary
+FROM {SCHEMA}.ticket_summary
 WHERE 
     event_id = :event_id 
     AND ticket_category NOT IN ('spectator', 'extra'); 

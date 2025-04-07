@@ -209,7 +209,7 @@ The pipeline creates the following tables for each configured region:
    - created_at
    - customer_info
 
-3. `ticket_type_summary` - Summarizes ticket counts by type
+3. `ticket_summary` - Summarizes ticket counts by type
    - id (PK)
    - event_id (FK)
    - ticket_type_id

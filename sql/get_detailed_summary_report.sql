@@ -3,7 +3,7 @@ WITH ticket_data AS (
         LOWER(ticket_name) AS ticket_name,
         ticket_category,
         total_count
-    FROM {SCHEMA}.ticket_type_summary
+    FROM {SCHEMA}.ticket_summary
     WHERE ticket_category <> 'extra'
 ),
 

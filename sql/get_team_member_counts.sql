@@ -13,7 +13,7 @@ WITH main_tickets AS (
                 LOWER(tt.ticket_name)
         END as base_name,
         UPPER(tt.ticket_event_day) as event_day
-    FROM {SCHEMA}.ticket_type_summary tt
+    FROM {SCHEMA}.ticket_summary tt
     WHERE tt.ticket_category IN ('double', 'relay', 'corporate_relay')
     AND NOT (
             tt.ticket_name LIKE '%ATHLETE 2%'
@@ -53,7 +53,7 @@ member_tickets AS (
                 tt.ticket_name as member_ticket_name,
                 tt.total_count as member_count,
                 tt.ticket_event_day as tt_event_day
-            FROM {SCHEMA}.ticket_type_summary tt
+            FROM {SCHEMA}.ticket_summary tt
             WHERE (
                 tt.ticket_name LIKE '%ATHLETE 2%'
                 OR tt.ticket_name LIKE '%ATHLETE2%'
