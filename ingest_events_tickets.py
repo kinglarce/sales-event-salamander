@@ -6,7 +6,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine, text, func, inspect
-from models.database import Base, Event, Ticket, TicketTypeSummary, SummaryReport
+from models.database import Base, Event, Ticket, TicketSummary, SummaryReport
 import time
 from math import ceil
 from typing import Dict, Set, List, Tuple, Optional, Union, Any
@@ -15,6 +15,8 @@ from enum import Enum
 import os
 from dotenv import load_dotenv
 import re
+from utils.under_shop_processor import UnderShopProcessor, update_under_shop_summary 
+from utils.event_processor import determine_ticket_group, determine_ticket_event_day, TicketCategory, TicketEventDay
 
 # Create logs directory if it doesn't exist
 if not os.path.exists('logs'):
@@ -42,18 +44,6 @@ if os.getenv('ENABLE_FILE_LOGGING', 'true').strip().lower() in ('true', '1'):
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
-
-class TicketCategory(Enum):
-    SINGLE = "single"
-    DOUBLES = "double"
-    RELAY = "relay"
-    SPECTATOR = "spectator"
-    EXTRA = "extra"
-    
-class TicketEventDay(Enum):
-    FRIDAY = "friday"
-    SATURDAY = "saturday"
-    SUNDAY = "sunday"
 
 class GymMembershipStatus(Enum):
     """Standardized gym membership status"""
@@ -270,11 +260,22 @@ class DatabaseManager:
             # Drop existing tables
             if os.getenv('ENABLE_GROWTH_ANALYSIS', 'false').lower() != 'true':
                 conn.execute(text(f"DROP TABLE IF EXISTS {self.schema}.summary_report CASCADE"))
+            
+            # Drop tables with both old and new names to ensure clean setup
             conn.execute(text(f"""
+                -- Drop main tables
+                DROP TABLE IF EXISTS {self.schema}.ticket_summary CASCADE;
                 DROP TABLE IF EXISTS {self.schema}.ticket_type_summary CASCADE;
                 DROP TABLE IF EXISTS {self.schema}.tickets CASCADE;
                 DROP TABLE IF EXISTS {self.schema}.events CASCADE;
+                
+                -- Drop under shop related tables
+                DROP TABLE IF EXISTS {self.schema}.ticket_under_shop_summary CASCADE;
+                DROP TABLE IF EXISTS {self.schema}.ticket_under_shops CASCADE;
+                DROP TABLE IF EXISTS {self.schema}.ticket_volumes CASCADE;
+                DROP TABLE IF EXISTS {self.schema}.ticket_volume CASCADE;
             """))
+                
             conn.commit()
 
         # Create tables
@@ -319,31 +320,6 @@ def verify_tables(session, schema: str):
     except Exception as e:
         logger.error(f"Table verification failed for schema {schema}: {e}")
         raise
-
-def determine_ticket_group(ticket_name: str) -> TicketCategory:
-    """Determine basic ticket group (single, double, relay, spectator, extra)"""
-    name_lower = ticket_name.lower()
-    if 'friend' in name_lower or 'sportograf' in name_lower or 'transfer' in name_lower or 'complimentary' in name_lower:
-        return TicketCategory.EXTRA 
-    elif 'double' in name_lower:
-        return TicketCategory.DOUBLES
-    elif 'relay' in name_lower:
-        return TicketCategory.RELAY
-    elif 'spectator' in name_lower:
-        return TicketCategory.SPECTATOR
-    return TicketCategory.SINGLE
-
-def determine_ticket_event_day(ticket_name: str) -> TicketEventDay:
-    """Determine basic ticket group (friday, saturday, sunday)"""
-    name_lower = ticket_name.lower()
-    if 'sunday' in name_lower:
-        return TicketEventDay.SUNDAY 
-    elif 'saturday' in name_lower:
-        return TicketEventDay.SATURDAY
-    elif 'friday' in name_lower:
-        return TicketEventDay.FRIDAY
-    return TicketEventDay.SATURDAY
-
 # Add logging configuration
 class LogConfig:
     DEBUG_ENABLED = False  # Toggle for debug logging
@@ -427,11 +403,11 @@ def update_ticket_summary(session, schema: str, event_id: str):
             ticket_name = ticket_name_map.get(count.ticket_type_id, '')
             summary_id = f"{count.event_id}_{count.ticket_type_id}"
             
-            summary = session.get(TicketTypeSummary, summary_id)
+            summary = session.get(TicketSummary, summary_id)
             if summary:
                 summary.total_count = count.total_count
             else:
-                summary = TicketTypeSummary(
+                summary = TicketSummary(
                     id=summary_id,
                     event_id=count.event_id,
                     event_name=event.name,
@@ -526,6 +502,12 @@ def create_event(session: sessionmaker, event_data: dict, schema: str) -> Event:
     try:
         session.merge(event)
         session.commit()
+        
+        # Process underShops if available
+        if 'underShops' in event_data:
+            processor = UnderShopProcessor(session, schema)
+            processor.process_under_shops(event_data, event_data['_id'])
+            
         return event
     except Exception as e:
         session.rollback()
@@ -683,6 +665,18 @@ class TicketProcessor:
 
             # Get extra fields
             extra_fields = ticket_data.get("extraFields", {})
+            
+            # Determine ticket category
+            ticket_category = determine_ticket_group(ticket_name)
+            
+            # Check if the ticket was purchased through an under shop
+            # Only set is_under_shop=True if the ticket is not EXTRA or SPECTATOR
+            under_shop_id = ticket_data.get("underShopId")
+            is_under_shop = bool(under_shop_id) and ticket_category not in [TicketCategory.EXTRA, TicketCategory.SPECTATOR]
+            
+            # If category is EXTRA or SPECTATOR, we don't track under_shop_id
+            if ticket_category in [TicketCategory.EXTRA, TicketCategory.SPECTATOR]:
+                under_shop_id = None
 
             # Prepare ticket values
             ticket_values = {
@@ -713,8 +707,8 @@ class TicketProcessor:
                 'gym_affiliate_location': self.field_mapper.get_gym_affiliate_location(extra_fields),
                 'is_returning_athlete': normalize_yes_no(extra_fields.get("returning_athlete")),
                 'is_returning_athlete_to_city': normalize_yes_no(extra_fields.get("returning_athlete_city")),
-                'is_under_shop': bool(ticket_data.get("underShopId")),
-                'under_shop_id': ticket_data.get("underShopId")
+                'is_under_shop': is_under_shop,
+                'under_shop_id': under_shop_id
             }
 
             # Update or create ticket
@@ -918,6 +912,8 @@ def ingest_data(token: str, event_id: str, schema: str, region: str, skip_fetch:
             with TransactionManager(db_manager) as session:
                 update_ticket_summary(session, schema, event_id)
                 update_summary_report(session, schema, event_id)
+                # Also update under shop summary
+                update_under_shop_summary(session, schema, event_id)
             return
 
         # Initialize variables
@@ -982,6 +978,8 @@ def ingest_data(token: str, event_id: str, schema: str, region: str, skip_fetch:
             with TransactionManager(db_manager) as session:
                 update_ticket_summary(session, schema, event_id)
                 update_summary_report(session, schema, event_id)
+                # Also update under shop summary
+                update_under_shop_summary(session, schema, event_id)
                 
             logger.info(f"Successfully processed {processed_count} tickets for event {event_id}")
 
@@ -1056,6 +1054,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     parser.add_argument('--skip_fetch', action='store_true', help='Enable skipping API calls')
+    parser.add_argument('--migrate', action='store_true', help='Run database migration for table renames')
     args = parser.parse_args()
     
     configs = get_event_configs()
@@ -1068,7 +1067,7 @@ if __name__ == "__main__":
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-    
+
     # Process each config
     for config in configs:
         try:
