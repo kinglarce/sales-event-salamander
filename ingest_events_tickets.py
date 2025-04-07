@@ -712,7 +712,9 @@ class TicketProcessor:
                 'gym_affiliate': self.field_mapper.get_gym_affiliate(extra_fields),
                 'gym_affiliate_location': self.field_mapper.get_gym_affiliate_location(extra_fields),
                 'is_returning_athlete': normalize_yes_no(extra_fields.get("returning_athlete")),
-                'is_returning_athlete_to_city': normalize_yes_no(extra_fields.get("returning_athlete_city"))
+                'is_returning_athlete_to_city': normalize_yes_no(extra_fields.get("returning_athlete_city")),
+                'is_under_shop': bool(ticket_data.get("underShopId")),
+                'under_shop_id': ticket_data.get("underShopId")
             }
 
             # Update or create ticket

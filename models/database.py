@@ -60,6 +60,8 @@ class Ticket(Base):
     gym_affiliate_location = Column(String)
     is_returning_athlete = Column(Boolean)
     is_returning_athlete_to_city = Column(Boolean)
+    is_under_shop = Column(Boolean)
+    under_shop_id = Column(String)
 
 class TicketTypeSummary(Base):
     __tablename__ = "ticket_type_summary"
