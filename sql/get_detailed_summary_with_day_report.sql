@@ -4,7 +4,7 @@ WITH ticket_data AS (
         ticket_category,
         total_count,  
         UPPER(ticket_event_day) AS ticket_event_day 
-    FROM {SCHEMA}.ticket_type_summary
+    FROM {SCHEMA}.ticket_summary
     WHERE ticket_category <> 'extra'
 ),
 

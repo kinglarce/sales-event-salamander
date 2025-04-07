@@ -10,7 +10,7 @@ WITH base_names AS (
             ELSE LOWER(t.ticket_name)
         END as base_name
     FROM {SCHEMA}.tickets t
-    JOIN {SCHEMA}.ticket_type_summary ts 
+    JOIN {SCHEMA}.ticket_summary ts 
         ON t.ticket_type_id = ts.ticket_type_id
     WHERE ts.ticket_category NOT IN ('spectator', 'extra')
 ),

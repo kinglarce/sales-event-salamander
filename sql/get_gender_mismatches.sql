@@ -10,7 +10,7 @@ WITH gender_mismatch_base AS (
             ELSE 'NONE'
         END as event_day
     FROM {SCHEMA}.tickets t
-    JOIN {SCHEMA}.ticket_type_summary tt ON t.ticket_type_id = tt.ticket_type_id
+    JOIN {SCHEMA}.ticket_summary tt ON t.ticket_type_id = tt.ticket_type_id
     WHERE (
         (t.ticket_name LIKE '%WOMEN%' AND t.gender = 'Male')
         OR (t.ticket_name LIKE '%MEN%' AND NOT t.ticket_name LIKE '%WOMEN%' AND t.gender = 'Female')

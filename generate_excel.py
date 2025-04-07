@@ -16,7 +16,7 @@ def generate_summary_excel(schema: str, output_path: str = "ticket_summary.xlsx"
             ts.ticket_name,
             ts.total_count,
             ts.updated_at
-        FROM {schema}.ticket_type_summary ts
+        FROM {schema}.ticket_summary ts
         JOIN {schema}.events e ON ts.event_id = e.id
         ORDER BY e.name, ts.ticket_name
     """

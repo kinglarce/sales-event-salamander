@@ -12,7 +12,7 @@ WITH age_restricted_athletes AS (
             'age', t.age
         ) ORDER BY t.age) as athletes
     FROM {SCHEMA}.tickets t
-    JOIN {SCHEMA}.ticket_type_summary tt ON t.ticket_type_id = tt.ticket_type_id
+    JOIN {SCHEMA}.ticket_summary tt ON t.ticket_type_id = tt.ticket_type_id
     WHERE t.age <= 18
       AND tt.ticket_category NOT IN ('spectator', 'extra')
     GROUP BY age_group
