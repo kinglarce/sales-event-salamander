@@ -170,6 +170,11 @@ Run the ticket analytics script:
 python ticket_analytics.py
 ```
 
+## Undershops
+
+- **PARTNERACCESS**: Use this prefix for under shops that are part of the partner access program.
+- **HTCACCESS**: Use this prefix for under shops associated with HTC access.
+
 ## Cron Jobs
 
 The pipeline includes automated data ingestion and analytics via cron jobs. The schedule is configured in `Dockerfile.cron`:
@@ -186,7 +191,7 @@ To modify the schedule:
 1. Edit `Dockerfile.cron`
 2. Rebuild the cron container:
 ```bash
-docker-compose up -d --build cron
+docker-compose up -d --build app cron
 ```
 
 ## Database Schema
@@ -223,7 +228,14 @@ The pipeline creates the following tables for each configured region:
    - total_count
    - created_at
 
-## Accessing pgweb
+5. `ticket_under_shops` - Stores under shop information
+   - id (PK)
+   - shop_name
+   - shop_category
+   - created_at
+   - updated_at
+
+### Accessing pgweb
 
 Once the containers are running, access the pgweb interface at:
 ```
