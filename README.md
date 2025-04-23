@@ -145,6 +145,7 @@ docker exec -it vivenu-app python ingest_age_groups.py
 docker exec -it vivenu-app python ticket_analytics.py
 
 # Run for Reporting Excel data and sending to Slack
+docker exec -it vivenu-app python reporting_analytics.py --excel
 docker exec -it vivenu-app python reporting_analytics.py --slack --excel
 ```
 
