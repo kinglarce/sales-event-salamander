@@ -63,9 +63,10 @@ class TicketDataProvider:
     """Provides ticket data from the database"""
     
     def __init__(self, db_manager: DatabaseManager, event_id: str, region: str):
+        self.db_manager = db_manager
         self.db = db_manager
-        self.schema = db_manager.schema
         self.event_id = event_id
+        self.schema = db_manager.schema
         self.region = region
         
     def get_capacity_configs(self) -> Dict[str, str]:
@@ -204,6 +205,28 @@ class TicketDataProvider:
         except Exception as e:
             logger.error(f"Error getting shop category breakdown: {e}")
             return {}
+
+    def get_addon_summary(self) -> List[Dict[str, Any]]:
+        """Get addon summary data"""
+        try:
+            sql_file = 'sql/get_addon_summary_report.sql'
+            
+            # Read and format SQL file
+            with open(sql_file, 'r') as file:
+                sql = file.read().format(SCHEMA=self.schema)
+
+            # Execute query
+            results = self.db.execute_query(sql, {"event_id": self.event_id})
+
+            # Process results into a list of dictionaries
+            return [{
+                "addon_name": row[0], 
+                "total_count": row[1]
+            } for row in results]
+
+        except Exception as e:
+            logger.error(f"Error getting addon summary: {e}")
+            return []
 
 class DataAnalyzer:
     """Handles data analysis and projections"""
@@ -413,6 +436,23 @@ class SlackReporter:
             logger.error(f"Error getting adaptive summary: {e}")
             return []
     
+    def format_addon_table(self, addon_data: List[Dict[str, Any]]) -> str:
+        """Format addon summary data into a Slack-friendly table"""
+        if not addon_data:
+            return ""
+
+        # Create table
+        table = "```\n"
+        table += f"{'Addon Name':<50} | {'Count':>12}\n"
+        table += f"{'-' * 50}-|-{'-' * 12}\n"
+        
+        # Add rows to the table
+        for item in addon_data:
+            table += f"{item['addon_name']:<50} | {item['total_count']:>12}\n"
+        
+        table += "```"
+        return table
+    
     def send_report(self, 
                    current_summary: Dict[str, int], 
                    detailed_breakdown: List[Dict[str, Any]],
@@ -420,7 +460,8 @@ class SlackReporter:
                    growth_data: Optional[Dict] = None, 
                    projections: Optional[pd.DataFrame] = None,
                    projection_minutes: int = 3,
-                   shop_category_breakdown: Optional[Dict[str, List[Dict[str, Any]]]] = None) -> bool:
+                   shop_category_breakdown: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+                   addon_summary: Optional[List[Dict[str, Any]]] = None) -> bool:
         """Send a report to Slack with current summary and projections"""
         if not self.slack_client:
             logger.warning("Slack client not available. Report not sent.")
@@ -550,6 +591,28 @@ class SlackReporter:
                             "text": shop_table
                         }
                     })
+            
+            # Add addon summary if available
+            if addon_summary and len(addon_summary) > 0:
+                blocks.append({"type": "divider"})
+                
+                blocks.append({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "*Addon Summary:*"
+                    }
+                })
+                
+                # Format addon table
+                addon_table = self.format_addon_table(addon_summary)
+                blocks.append({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": addon_table
+                    }
+                })
             
             # Add growth data if enabled and available
             if os.getenv('ENABLE_GROWTH_ANALYSIS', 'false').lower() == 'true' and growth_data and growth_data.get('changes'):
@@ -685,6 +748,10 @@ class TicketAnalytics:
             current_summary = self.data_provider.get_current_summary(capacity_configs)
             logger.info(f"Current summary: {current_summary}")
             
+            # Get addon summary
+            addon_summary = self.data_provider.get_addon_summary()
+            logger.info(f"Add-On summary: {addon_summary}")
+            
             # Get historical data
             historical_df = self.data_provider.get_historical_data(minutes=self.history_minutes)
             logger.info(f"Historical data shape: {historical_df.shape if not historical_df.empty else 'Empty'}")
@@ -712,13 +779,14 @@ class TicketAnalytics:
             
             # Send to Slack
             success = self.reporter.send_report(
-                current_summary, 
-                detailed_breakdown,
-                capacity_configs,
-                growth_data, 
-                projection_df,
-                self.projection_minutes,
-                shop_category_breakdown
+                current_summary=current_summary,
+                detailed_breakdown=detailed_breakdown,
+                capacity_configs=capacity_configs,
+                growth_data=growth_data,
+                projections=projection_df,
+                projection_minutes=self.projection_minutes,
+                shop_category_breakdown=shop_category_breakdown,
+                addon_summary=addon_summary
             )
             logger.info(f"Slack report sent: {success}")
             
