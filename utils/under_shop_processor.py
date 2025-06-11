@@ -14,30 +14,26 @@ class UnderShopProcessor:
         self.session = session
         self.schema = schema
         
-    def extract_shop_category(self, customer_tags: List[str]) -> Optional[str]:
-        if not customer_tags:
+    def extract_shop_category(self, shop_name: str) -> Optional[str]:
+        if not shop_name:
             return None
             
-        # Look for tags with HTCACCESS or PARTNERACCESS prefix
-        for tag in customer_tags:
-            # Skip if tag is not a string or is empty
-            if not isinstance(tag, str) or not tag:
-                continue
+        # Convert shop name to uppercase for case-insensitive matching
+        shop_name_upper = shop_name.upper()
+        
+        # Ignore shops with DEPRECATED in the name
+        if "DEPRECATED" in shop_name_upper:
+            return None
+        
+        # Check for GYM ACCESS variations (with or without spaces/delimiters)
+        gym_pattern = re.search(r'GYM[-_\s]*ACCESS', shop_name_upper)
+        if gym_pattern:
+            return "htcaccess"
                 
-            # Check if the tag itself is exactly HTCACCESS or PARTNERACCESS
-            if tag.upper() == "PARTNERACCESS":
-                return "partneraccess"
-            
-            # Check for HTCACCESS or PARTNERACCESS with suffix (various delimiter styles)
-            htc_match = re.match(r'HTCACCESS[-_]([a-zA-Z0-9]+)', tag, re.IGNORECASE)
-            partner_match = re.match(r'PARTNERACCESS[-_]([a-zA-Z0-9]+)', tag, re.IGNORECASE)
-            
-            if htc_match:
-                suffix = htc_match.group(1)
-                return f"htcaccess-{suffix.lower()}" if suffix else "htcaccess"
-            elif partner_match:
-                suffix = partner_match.group(1)
-                return f"partneraccess-{suffix.lower()}" if suffix else "partneraccess"
+        # Check for PARTNERSHIP ACCESS variations (with or without spaces/delimiters)
+        partnership_pattern = re.search(r'PARTNERSHIP[-_\s]*ACCESS', shop_name_upper)
+        if partnership_pattern:
+            return "partneraccess"
                 
         return None
 
@@ -74,8 +70,8 @@ class UnderShopProcessor:
                 
                 # Extract shop name and category
                 shop_name = self.normalize_shop_name(shop.get('name', ''))
-                customer_tags = shop.get('customerTags', [])
-                shop_category = self.extract_shop_category(customer_tags)
+                shop_category = self.extract_shop_category(shop_name)
+                print('what is the shop name', shop_name, shop_category)
                 
                 # Handle shops with required tags
                 if shop_category:
@@ -114,7 +110,7 @@ class UnderShopProcessor:
                     
                     logger.debug(f"Processed {active_tickets} active tickets for shop {shop_id}")
                 else:
-                    logger.debug(f"Skipping underShop {shop_id} - '{shop_name}' without required HTCACCESS/PARTNERACCESS tag. Tags: {customer_tags}")
+                    logger.debug(f"Skipping underShop {shop_id} - '{shop_name}' without required GYM ACCESS/PARTNERSHIP ACCESS keywords")
                     
             # Commit changes
             self.session.commit()
