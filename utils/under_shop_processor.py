@@ -26,9 +26,9 @@ class UnderShopProcessor:
             return None
         
         # Check for GYM ACCESS variations (with or without spaces/delimiters)
-        gym_pattern = re.search(r'GYM[-_\s]*ACCESS', shop_name_upper)
-        if gym_pattern:
-            return "htcaccess"
+        # gym_pattern = re.search(r'GYM[-_\s]*ACCESS', shop_name_upper)
+        # if gym_pattern:
+        #     return "htcaccess"
                 
         # Check for PARTNERSHIP ACCESS variations (with or without spaces/delimiters)
         partnership_pattern = re.search(r'PARTNERSHIP[-_\s]*ACCESS', shop_name_upper)
