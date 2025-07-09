@@ -71,7 +71,6 @@ class UnderShopProcessor:
                 # Extract shop name and category
                 shop_name = self.normalize_shop_name(shop.get('name', ''))
                 shop_category = self.extract_shop_category(shop_name)
-                print('what is the shop name', shop_name, shop_category)
                 
                 # Handle shops with required tags
                 if shop_category:

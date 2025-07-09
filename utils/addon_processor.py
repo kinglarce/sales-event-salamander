@@ -124,39 +124,3 @@ def _get_addon_counts_from_database(session, schema: str, event_id: str) -> List
     except Exception as e:
         logger.error(f"Error executing addon summary query for schema {schema}: {e}")
         return []
-
-
-def debug_addon_storage(session, schema: str, event_id: str) -> None:
-    """Debug function to check if addons are being stored"""
-    try:
-        session.execute(text(f"SET search_path TO {schema}"))
-        
-        # Check how many tickets have addons
-        query = text(f"""
-            SELECT 
-                COUNT(*) as total_tickets,
-                COUNT(CASE WHEN addons IS NOT NULL AND addons != '' THEN 1 END) as tickets_with_addons
-            FROM {schema}.tickets 
-            WHERE event_id = :event_id
-        """)
-        
-        result = session.execute(query, {"event_id": event_id}).fetchone()
-        logger.info(f"Debug addon storage - Total tickets: {result.total_tickets}, "
-                   f"With addons: {result.tickets_with_addons}")
-        
-        # Sample some addon data
-        sample_query = text(f"""
-            SELECT id, addons
-            FROM {schema}.tickets 
-            WHERE event_id = :event_id 
-            AND addons IS NOT NULL 
-            AND addons != ''
-            LIMIT 5
-        """)
-        
-        sample_results = session.execute(sample_query, {"event_id": event_id}).fetchall()
-        for row in sample_results:
-            logger.info(f"Sample ticket {row.id} addons: {row.addons}")
-            
-    except Exception as e:
-        logger.error(f"Error in debug addon storage: {e}") 
