@@ -16,7 +16,7 @@ class AddonProcessor:
         self.session = session
         self.schema = schema
     
-    def process_ticket_addons(self, ticket_data: Dict, event_id: str) -> Optional[str]:
+    def process_ticket_addons(self, ticket_data: Dict) -> Optional[str]:
         """Extract addon name from ticket data - simplified to just return the name"""
         addons = ticket_data.get('addOns', [])
         if not addons:

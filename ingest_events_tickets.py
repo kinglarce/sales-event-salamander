@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 import re
 from utils.under_shop_processor import UnderShopProcessor, update_under_shop_summary 
 from utils.event_processor import determine_ticket_group, determine_ticket_event_day, TicketCategory, TicketEventDay
-from utils.addon_processor import update_addon_summary, AddonProcessor, debug_addon_storage
+from utils.addon_processor import update_addon_summary, AddonProcessor
 
 # Create logs directory if it doesn't exist
 if not os.path.exists('logs'):
@@ -686,7 +686,7 @@ class TicketProcessor:
                 under_shop_id = None
 
             # Process addOns - simplified to just get the name
-            addon_data = self.addon_processor.process_ticket_addons(ticket_data, event_id)
+            addon_data = self.addon_processor.process_ticket_addons(ticket_data)
             
             # Debug: log the raw addOns data
             raw_addons = ticket_data.get('addOns', [])
@@ -996,10 +996,6 @@ def ingest_data(token: str, event_id: str, schema: str, region: str, skip_fetch:
         processed_count = batch_processor.process_tickets(api, db_manager, found_event_data, schema, region)
         
         if processed_count > 0:
-            # Debug addon storage before updating summaries
-            with TransactionManager(db_manager) as session:
-                debug_addon_storage(session, schema, event_id)
-            
             # Update summaries in final transaction
             with TransactionManager(db_manager) as session:
                 update_ticket_summary(session, schema, event_id)
