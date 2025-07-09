@@ -141,8 +141,14 @@ docker exec -it vivenu-app python scripts/run_ingest.py
 # Run for Ingesting Age Group Data
 docker exec -it vivenu-app python ingest_age_groups.py
 
+# Run for Ingesting Static Data
+docker exec -it vivenu-app python ingest_static_data.py
+
 # Run for Reporting Registration Data to Slack
 docker exec -it vivenu-app python ticket_analytics.py
+
+# Run for Reporting only for sending Specatator sales to Slack
+docker exec -it vivenu-app python scripts/run_ingest.py && docker exec -it vivenu-app python spectator_analytics.py
 
 # Run for Reporting Excel data and sending to Slack
 docker exec -it vivenu-app python reporting_analytics.py --excel

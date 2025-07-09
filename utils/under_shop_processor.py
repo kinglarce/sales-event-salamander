@@ -25,9 +25,7 @@ class UnderShopProcessor:
                 continue
                 
             # Check if the tag itself is exactly HTCACCESS or PARTNERACCESS
-            if tag.upper() == "HTCACCESS":
-                return "htcaccess"
-            elif tag.upper() == "PARTNERACCESS":
+            if tag.upper() == "PARTNERACCESS":
                 return "partneraccess"
             
             # Check for HTCACCESS or PARTNERACCESS with suffix (various delimiter styles)
