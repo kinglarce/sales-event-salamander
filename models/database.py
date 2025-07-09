@@ -62,6 +62,7 @@ class Ticket(Base):
     is_returning_athlete_to_city = Column(Boolean)
     is_under_shop = Column(Boolean)
     under_shop_id = Column(String)
+    addons = Column(String)
 
 class TicketSummary(Base):
     __tablename__ = "ticket_summary"
@@ -138,3 +139,19 @@ class TicketUnderShopSummary(Base):
 
 # For backward compatibility
 TicketTypeSummary = TicketSummary
+
+class TicketAddonSummary(Base):
+    __tablename__ = "ticket_addon_summary"
+    __table_args__ = (
+        UniqueConstraint('id', name='ticket_addon_summary_pkey'),
+        {'schema': None}
+    )
+    
+    id = Column(String, primary_key=True)  # event_id + addon_name hash
+    event_id = Column(String, ForeignKey("events.id"))
+    event_name = Column(String)
+    addon_name = Column(String)
+    product_id = Column(String, nullable=True)  # Make nullable since we're not using it
+    total_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

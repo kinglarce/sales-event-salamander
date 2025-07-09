@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 import re
 from utils.under_shop_processor import UnderShopProcessor, update_under_shop_summary 
 from utils.event_processor import determine_ticket_group, determine_ticket_event_day, TicketCategory, TicketEventDay
+from utils.addon_processor import update_addon_summary, AddonProcessor
 
 # Create logs directory if it doesn't exist
 if not os.path.exists('logs'):
@@ -91,10 +92,6 @@ class VivenuAPI:
         response = requests.get(f"{self.base_url}/tickets", headers=self.headers, params=params, verify=False)
         response.raise_for_status()
         return response.json()
-        
-    # Simple no-op close method for API interface consistency
-    async def close(self):
-        pass
 
 class VivenuHttpxAPI:
     """API implementation using httpx"""
@@ -161,6 +158,8 @@ class VivenuHttpxAPI:
             "skip": skip,
             "top": limit
         }
+        
+        logger.debug(f"Making httpx request to: {url} with params {params}")
         
         try:
             # Add a small delay to avoid rate limiting
@@ -273,6 +272,9 @@ class DatabaseManager:
                 DROP TABLE IF EXISTS {self.schema}.ticket_under_shops CASCADE;
                 DROP TABLE IF EXISTS {self.schema}.ticket_volumes CASCADE;
                 DROP TABLE IF EXISTS {self.schema}.ticket_volume CASCADE;
+                
+                -- Drop addon tables
+                DROP TABLE IF EXISTS {self.schema}.ticket_addon_summary CASCADE;
             """))
                 
             conn.commit()
@@ -319,6 +321,7 @@ def verify_tables(session, schema: str):
     except Exception as e:
         logger.error(f"Table verification failed for schema {schema}: {e}")
         raise
+
 # Add logging configuration
 class LogConfig:
     DEBUG_ENABLED = False  # Toggle for debug logging
@@ -626,12 +629,17 @@ class CustomFieldMapper:
 class TicketProcessor:
     """Efficient ticket processing with lookup caching and validation"""
     
-    def __init__(self, session, schema, region):
+    def __init__(self, session, schema: str, region: str):
         self.session = session
         self.schema = schema
+        self.region = region
+        self.processed = 0
+        self.failed = 0
         self.existing_tickets_cache = {}
         self.field_mapper = CustomFieldMapper(schema, region)
-    
+        self.addon_processor = AddonProcessor(session, schema)
+        self.force_addon_update = True  # Force update addon data
+
     def get_existing_ticket(self, ticket_id: str) -> Optional[Ticket]:
         """Efficiently lookup ticket from cache or database"""
         cache_key = f"{ticket_id}_{self.schema}"
@@ -677,53 +685,68 @@ class TicketProcessor:
             if ticket_category in [TicketCategory.EXTRA, TicketCategory.SPECTATOR]:
                 under_shop_id = None
 
-            # Prepare ticket values
-            ticket_values = {
-                'id': ticket_id,
-                'region_schema': self.schema,
-                'transaction_id': ticket_data.get("transactionId"),
-                'ticket_type_id': ticket_data.get("ticketTypeId"),
-                'currency': ticket_data.get("currency"),
-                'status': ticket_data.get("status"),
-                'personalized': ticket_data.get("personalized", False),
-                'expired': ticket_data.get("expired", False),
-                'event_id': event_id,
-                'ticket_name': ticket_name,
-                'category_name': ticket_data.get("categoryName"),
-                'barcode': ticket_data.get("barcode"),
-                'created_at': ticket_data.get("createdAt"),
-                'updated_at': ticket_data.get("updatedAt"),
-                'city': ticket_data.get("city"),
-                'country': ticket_data.get("country"),
-                'customer_id': ticket_data.get("customerId"),
-                'gender': standardize_gender(extra_fields.get("gender")),
-                'birthday': extra_fields.get("birth_date"),
-                'age': calculate_age(extra_fields.get("birth_date")),
-                'nationality': extra_fields.get("nationality"),
-                'region_of_residence': extra_fields.get("region_of_residence"),
-                'is_gym_affiliate': extra_fields.get("hyrox_training_clubs"),
-                'gym_affiliate': self.field_mapper.get_gym_affiliate(extra_fields),
-                'gym_affiliate_location': self.field_mapper.get_gym_affiliate_location(extra_fields),
-                'is_returning_athlete': normalize_yes_no(extra_fields.get("returning_athlete")),
-                'is_returning_athlete_to_city': normalize_yes_no(extra_fields.get("returning_athlete_city")),
-                'is_under_shop': is_under_shop,
-                'under_shop_id': under_shop_id
-            }
-
-            # Update or create ticket
+            # Process addOns - simplified to just get the name
+            addon_data = self.addon_processor.process_ticket_addons(ticket_data)
+            
+            # Debug: log the raw addOns data
+            raw_addons = ticket_data.get('addOns', [])
+            if raw_addons:
+                logger.debug(f"Ticket {ticket_id} raw addOns: {raw_addons}")
+                logger.debug(f"Ticket {ticket_id} processed addon: {addon_data}")
+            
+            # Check if ticket exists
             existing_ticket = self.get_existing_ticket(ticket_id)
             if existing_ticket:
-                for key, value in ticket_values.items():
-                    setattr(existing_ticket, key, value)
+                # Always update addon data for existing tickets
+                if self.force_addon_update or existing_ticket.addons != addon_data:
+                    existing_ticket.addons = addon_data
+                    logger.debug(f"Updated existing ticket {ticket_id} addon: {addon_data}")
+                    self.processed += 1  # Count as processed since we updated it
                 return existing_ticket
             else:
+                # Create new ticket
+                ticket_values = {
+                    'id': ticket_id,
+                    'region_schema': self.schema,
+                    'transaction_id': ticket_data.get("transactionId"),
+                    'ticket_type_id': ticket_data.get("ticketTypeId"),
+                    'currency': ticket_data.get("currency"),
+                    'status': ticket_data.get("status"),
+                    'personalized': ticket_data.get("personalized", False),
+                    'expired': ticket_data.get("expired", False),
+                    'event_id': event_id,
+                    'ticket_name': ticket_name,
+                    'category_name': ticket_data.get("categoryName"),
+                    'barcode': ticket_data.get("barcode"),
+                    'created_at': parse_datetime(ticket_data.get("createdAt")),
+                    'updated_at': parse_datetime(ticket_data.get("updatedAt")),
+                    'city': ticket_data.get("city"),
+                    'country': ticket_data.get("country"),
+                    'customer_id': ticket_data.get("customerId"),
+                    'gender': standardize_gender(extra_fields.get("gender")),
+                    'birthday': extra_fields.get("birth_date"),
+                    'age': calculate_age(extra_fields.get("birth_date")),
+                    'nationality': extra_fields.get("nationality"),
+                    'region_of_residence': extra_fields.get("region_of_residence"),
+                    'is_gym_affiliate': extra_fields.get("hyrox_training_clubs"),
+                    'gym_affiliate': self.field_mapper.get_gym_affiliate(extra_fields),
+                    'gym_affiliate_location': self.field_mapper.get_gym_affiliate_location(extra_fields),
+                    'is_returning_athlete': normalize_yes_no(extra_fields.get("returning_athlete")),
+                    'is_returning_athlete_to_city': normalize_yes_no(extra_fields.get("returning_athlete_city")),
+                    'is_under_shop': is_under_shop,
+                    'under_shop_id': under_shop_id,
+                    'addons': addon_data  # Now just a string or None
+                }
                 new_ticket = Ticket(**ticket_values)
                 self.session.add(new_ticket)
                 self.existing_tickets_cache[f"{ticket_id}_{self.schema}"] = new_ticket
+                logger.debug(f"Created new ticket {ticket_id} with addon: {addon_data}")
+                self.processed += 1
                 return new_ticket
 
         except Exception as e:
             logger.error(f"Error processing ticket {ticket_id}: {str(e)}")
+            self.failed += 1
             return None
 
     def clear_cache(self):
@@ -911,8 +934,8 @@ def ingest_data(token: str, event_id: str, schema: str, region: str, skip_fetch:
             with TransactionManager(db_manager) as session:
                 update_ticket_summary(session, schema, event_id)
                 update_summary_report(session, schema, event_id)
-                # Also update under shop summary
                 update_under_shop_summary(session, schema, event_id)
+                update_addon_summary(session, schema, event_id)
             return
 
         # Initialize variables
@@ -977,8 +1000,8 @@ def ingest_data(token: str, event_id: str, schema: str, region: str, skip_fetch:
             with TransactionManager(db_manager) as session:
                 update_ticket_summary(session, schema, event_id)
                 update_summary_report(session, schema, event_id)
-                # Also update under shop summary
                 update_under_shop_summary(session, schema, event_id)
+                update_addon_summary(session, schema, event_id)
                 
             logger.info(f"Successfully processed {processed_count} tickets for event {event_id}")
 

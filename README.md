@@ -134,6 +134,7 @@ docker-compose down
 ```bash
 # Re-build app for Environment changes
 docker-compose up --build -d app
+docker-compose up --build -d app cron
 
 # Run for Ingesting Event & Tickets Data 
 docker exec -it vivenu-app python scripts/run_ingest.py
