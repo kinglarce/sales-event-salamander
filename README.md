@@ -154,6 +154,15 @@ docker exec -it vivenu-app python scripts/run_ingest.py && docker exec -it viven
 # Run for Reporting Excel data and sending to Slack
 docker exec -it vivenu-app python reporting_analytics.py --excel
 docker exec -it vivenu-app python reporting_analytics.py --slack --excel
+
+# Run for Reporting for Cou[ons] Excel data and sending to Slack
+docker exec -it vivenu-app python ingest_coupons.py
+# Full report with Slack notification
+docker exec -it vivenu-app python coupon_analytics.py --slack
+# Console summary only
+docker exec -it vivenu-app python coupon_analytics.py --summary
+# Excel with custom path and Slack
+docker exec -it vivenu-app python coupon_analytics.py --excel my_report.xlsx
 ```
 
 

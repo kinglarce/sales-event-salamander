@@ -155,3 +155,48 @@ class TicketAddonSummary(Base):
     total_count = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class CouponSeries(Base):
+    """Stores coupon series information - simplified for grouping"""
+    __tablename__ = "coupon_series"
+    
+    id = Column(String, primary_key=True)  # _id from API
+    region_schema = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class Coupon(Base):
+    """Stores individual coupon information - simplified for tracking usage"""
+    __tablename__ = "coupons"
+    
+    id = Column(String, primary_key=True)  # _id from API
+    region_schema = Column(String, nullable=False)
+    code = Column(String, nullable=False, unique=True)  # The actual coupon code
+    name = Column(String, nullable=False)  # For grouping
+    active = Column(Boolean, default=True)
+    used = Column(Integer, default=0)  # Number of times this coupon has been used
+    is_used = Column(Boolean, default=False)  # Whether this coupon has been used at least once
+    is_tracked = Column(Boolean, default=False)  # Whether this code was in our tracked list
+    category = Column(String, nullable=True)  # Category from the distributed CSV
+    coupon_series_id = Column(String, ForeignKey("coupon_series.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class CouponUsageSummary(Base):
+    """Summary of coupon usage by series"""
+    __tablename__ = "coupon_usage_summary"
+    
+    id = Column(String, primary_key=True)  # series_id + region_schema
+    region_schema = Column(String, nullable=False)
+    series_id = Column(String, ForeignKey("coupon_series.id"), nullable=False)
+    series_name = Column(String, nullable=False)
+    total_codes = Column(Integer, default=0)
+    used_codes = Column(Integer, default=0)
+    unused_codes = Column(Integer, default=0)
+    tracked_codes = Column(Integer, default=0)
+    tracked_used_codes = Column(Integer, default=0)
+    tracked_unused_codes = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
