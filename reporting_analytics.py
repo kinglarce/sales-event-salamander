@@ -97,6 +97,22 @@ class DataProvider:
             logger.error(f"Error getting age group data: {e}")
             return pd.DataFrame()
 
+    def get_average_age_data(self) -> pd.DataFrame:
+        try:
+            query = self._read_sql_file('get_average_age_data.sql')
+            results = self.db.execute_query(query)
+            
+            df = pd.DataFrame(results, columns=[
+                'ticket_group', 
+                'ticket_category', 
+                'average_age', 
+                'total_count'
+            ])
+            return df
+        except Exception as e:
+            logger.error(f"Error getting average age data: {e}")
+            return pd.DataFrame()
+
     def get_event_info(self) -> Dict:
         try:
             query = self._read_sql_file('get_event_info.sql')
@@ -272,6 +288,8 @@ class SlackService:
         # Look for both private and public channels
         self.channel_name = os.getenv(f'EVENT_CONFIGS__{region}__REPORTING_CHANNEL', '#test-hyrox-bot')
         self.channel_id = None
+        self.db_manager = DatabaseManager(schema)
+        self.is_breakdown_by_day_enabled = self.is_breakdown_by_day_enabled(region)
         
         if self.slack_token:
             self.client = WebClient(token=self.slack_token)
@@ -279,6 +297,11 @@ class SlackService:
         else:
             self.client = None
             logger.warning("Slack client not initialized: missing API token")
+    
+    @staticmethod
+    def is_breakdown_by_day_enabled(region: str) -> bool:
+        """Check if summary_breakdown_day is enabled for the given region"""
+        return os.getenv(f'EVENT_CONFIGS__{region}__summary_breakdown_day', 'false').strip().lower() in ('true', '1')
 
     def _get_channel_id(self) -> Optional[str]:
         """Get and cache the channel ID"""
@@ -415,6 +438,9 @@ class SlackService:
             }
         })
         
+        # Create combined divisions (without day separation)
+        combined_df = self._create_combined_divisions(df)
+        
         # Order display groups by day (Friday, Saturday, Sunday)
         display_groups = sorted(
             df['display_ticket_group'].unique(),
@@ -435,6 +461,18 @@ class SlackService:
             
             if i + 2 < len(display_groups):
                 blocks.append({"type": "divider"})
+        
+        # Add average age section
+        avg_age_text = self._create_average_age_text(combined_df)
+        if avg_age_text:
+            blocks.append({"type": "divider"})
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": avg_age_text
+                }
+            })
         
         return blocks
 
@@ -592,6 +630,13 @@ class ExcelGenerator:
             'align': 'left',
             'bg_color': '#DFE4EC'
         })
+        average_format = workbook.add_format({
+            'bold': True, 
+            'border': 1, 
+            'align': 'right',
+            'bg_color': '#E6F3FF',
+            'num_format': '0.0'
+        })
         
         # Write event information
         hkt_tz = pytz.timezone('Asia/Hong_Kong')
@@ -701,12 +746,126 @@ class ExcelGenerator:
             # Add spacing between categories
             current_row += 2
         
+        # Add Average Age section
+        current_row = self._add_average_age_section(worksheet, writer.db_manager, current_row, workbook)
+        
         # Set column widths
         worksheet.set_column(0, 0, 35)  # Ticket group column
         worksheet.set_column(1, max_col, 10)  # Age range columns (smaller to fit more columns)
         
         # Freeze panes
         worksheet.freeze_panes(5, 1)  # Freeze after event info and headers
+
+    def _add_average_age_section(self, worksheet, db_manager, current_row, workbook):
+        """Add average age section to the worksheet"""
+        # Add formats
+        section_format = workbook.add_format({
+            'bold': True, 
+            'font_size': 12, 
+            'border': 1, 
+            'align': 'left',
+            'bg_color': '#8093B3',
+            'font_color': '#FFFFFF'
+        })
+        header_format = workbook.add_format({
+            'bold': True, 
+            'text_wrap': True, 
+            'valign': 'top', 
+            'border': 1, 
+            'align': 'center',
+            'bg_color': '#8093B3',
+            'font_color': '#FFFFFF'
+        })
+        category_format = workbook.add_format({
+            'bold': True, 
+            'text_wrap': True, 
+            'valign': 'top', 
+            'border': 1, 
+            'align': 'left',
+            'bg_color': '#DFE4EC'
+        })
+        average_format = workbook.add_format({
+            'bold': True, 
+            'border': 1, 
+            'align': 'right',
+            'bg_color': '#E6F3FF',
+            'num_format': '0.0'
+        })
+        count_format = workbook.add_format({
+            'bold': True, 
+            'border': 1, 
+            'align': 'right',
+            'bg_color': '#E6F3FF'
+        })
+        
+        # Get average age data
+        data_provider = DataProvider(db_manager, self.is_breakdown_by_day_enabled)
+        avg_age_df = data_provider.get_average_age_data()
+        
+        if not avg_age_df.empty:
+            # Write section header
+            worksheet.merge_range(current_row, 0, current_row, 3, 'AVERAGE AGE BY DIVISION', section_format)
+            current_row += 1
+            
+            # Write headers
+            worksheet.write(current_row, 0, 'Division', header_format)
+            worksheet.write(current_row, 1, 'Category', header_format)
+            worksheet.write(current_row, 2, 'Average Age', header_format)
+            worksheet.write(current_row, 3, 'Total Count', header_format)
+            current_row += 1
+            
+            # Write data
+            for _, row in avg_age_df.iterrows():
+                worksheet.write(current_row, 0, row['ticket_group'], category_format)
+                worksheet.write(current_row, 1, row['ticket_category'].upper(), category_format)
+                worksheet.write(current_row, 2, row['average_age'], average_format)
+                worksheet.write(current_row, 3, row['total_count'], count_format)
+                current_row += 1
+            
+            current_row += 2  # Add spacing
+        
+        return current_row
+
+    def _create_combined_divisions(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Create combined divisions without day separation"""
+        # Extract base ticket group (without day)
+        df_copy = df.copy()
+        df_copy['base_ticket_group'] = df_copy['ticket_group'].str.upper()
+        
+        # Group by base ticket group and age range, sum the counts
+        combined = df_copy.groupby(['base_ticket_group', 'age_range', 'ticket_category']).agg({
+            'count': 'sum'
+        }).reset_index()
+        
+        return combined
+
+    def _create_average_age_text(self, df: pd.DataFrame) -> str:
+        """Create average age text for Slack"""
+        if df.empty:
+            return ""
+        
+        # Get actual average age data from database
+        try:
+            data_provider = DataProvider(self.db_manager, self.is_breakdown_by_day_enabled)
+            avg_age_df = data_provider.get_average_age_data()
+            
+            if avg_age_df.empty:
+                return ""
+            
+            # Create text table
+            text = "*Average Age by Division*\n```\n"
+            text += f"{'Division':<25} {'Avg Age':<10} {'Total':<10}\n"
+            text += f"{'-'*25} {'-'*10} {'-'*10}\n"
+            
+            for _, row in avg_age_df.iterrows():
+                text += f"{row['ticket_group']:<25} {row['average_age']:<10.1f} {row['total_count']:<10}\n"
+            
+            text += "```"
+            return text
+            
+        except Exception as e:
+            logger.error(f"Error getting actual average age data for Slack: {e}")
+            return ""
 
     def _generate_additional_stats_content(self, writer: pd.ExcelWriter, event_info: Dict):
         """Generate content for the additional statistics tab"""
