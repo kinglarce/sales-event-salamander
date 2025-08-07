@@ -469,13 +469,25 @@ class SlackService:
             age_ranges = ['U24', '25-29', '30-34', '35-39', '40-44', '45-49', 
                          '50-54', '55-59', '60-64', '65-69', '70+', 'Incomplete', 'Total']
         
+        # Calculate totals for each display group
+        group_totals = {}
+        for display_group in display_groups:
+            total_row = df[(df['display_ticket_group'] == display_group) & (df['age_range'] == 'Total')]
+            group_totals[display_group] = total_row['count'].values[0] if not total_row.empty else 0
+        
         # Data rows
         for age_range in age_ranges:
             line = ""
             for display_group in display_groups:
                 row = df[(df['display_ticket_group'] == display_group) & (df['age_range'] == age_range)]
                 count = row['count'].values[0] if not row.empty else 0
-                line += f"{age_range:<15} {count:>19} | "
+                
+                # Calculate percentage for non-total rows
+                if age_range != 'Total' and group_totals[display_group] > 0:
+                    percentage = (count / group_totals[display_group]) * 100
+                    line += f"{age_range:<15} {count:>19} ({percentage:>5.1f}%) | "
+                else:
+                    line += f"{age_range:<15} {count:>19} | "
             table_text += line.rstrip(" | ") + "\n"
         
         table_text += "```"
@@ -630,36 +642,68 @@ class ExcelGenerator:
             # Get appropriate age ranges for this category
             age_ranges = self.get_age_ranges_for_category(category_display)
                 
+            # Calculate total columns including percentage columns
+            total_columns = len(age_ranges) + len([ar for ar in age_ranges if ar != 'Total'])
+            
             # Write category header
-            worksheet.merge_range(current_row, 0, current_row, len(age_ranges), category_display, section_format)
+            worksheet.merge_range(current_row, 0, current_row, total_columns, category_display, section_format)
             current_row += 1
             
-            # Write age range headers
+            # Calculate totals for each display group
+            group_totals = {}
+            for display_group in category_display_groups:
+                total_row = df[(df['display_ticket_group'] == display_group) & (df['age_range'] == 'Total')]
+                group_totals[display_group] = total_row['count'].values[0] if not total_row.empty else 0
+            
+            # Write age range headers (Count and Percentage columns)
             worksheet.write(current_row, 0, "Age Range", header_format)
-            for col, age_range in enumerate(age_ranges, 1):
-                worksheet.write(current_row, col, age_range, header_format)
+            col_offset = 1
+            for age_range in age_ranges:
+                # Count column
+                worksheet.write(current_row, col_offset, f"{age_range} (Count)", header_format)
+                col_offset += 1
+                # Percentage column (except for Total)
+                if age_range != 'Total':
+                    worksheet.write(current_row, col_offset, f"{age_range} (%)", header_format)
+                    col_offset += 1
             current_row += 1
             
             # Write data for each group
             for display_group in category_display_groups:
                 worksheet.write(current_row, 0, display_group, category_format)
-                for col, age_range in enumerate(age_ranges, 1):
+                col_offset = 1
+                for age_range in age_ranges:
                     count = df[(df['display_ticket_group'] == display_group) & 
                              (df['age_range'] == age_range)]['count'].values
                     value = count[0] if len(count) > 0 else 0
                     format_to_use = total_format if age_range == 'Total' else None
-                    worksheet.write(current_row, col, value, format_to_use)
+                    worksheet.write(current_row, col_offset, value, format_to_use)
+                    col_offset += 1
+                    
+                    # Add percentage for non-total rows
+                    if age_range != 'Total':
+                        if group_totals[display_group] > 0:
+                            percentage = (value / group_totals[display_group]) * 100
+                            percentage_format = workbook.add_format({
+                                'align': 'right',
+                                'border': 1,
+                                'num_format': '0.0%'
+                            })
+                            worksheet.write(current_row, col_offset, percentage / 100, percentage_format)
+                        else:
+                            worksheet.write(current_row, col_offset, 0, format_to_use)
+                        col_offset += 1
                 current_row += 1
             
             # Update max column width
-            max_col = max(max_col, len(age_ranges))
+            max_col = max(max_col, total_columns)
             
             # Add spacing between categories
             current_row += 2
         
         # Set column widths
         worksheet.set_column(0, 0, 35)  # Ticket group column
-        worksheet.set_column(1, max_col, 12)  # Age range columns
+        worksheet.set_column(1, max_col, 10)  # Age range columns (smaller to fit more columns)
         
         # Freeze panes
         worksheet.freeze_panes(5, 1)  # Freeze after event info and headers
