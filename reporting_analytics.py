@@ -113,6 +113,22 @@ class DataProvider:
             logger.error(f"Error getting average age data: {e}")
             return pd.DataFrame()
 
+    def get_nationality_data(self, locality: str) -> pd.DataFrame:
+        try:
+            query = self._read_sql_file('get_nationality_data.sql')
+            results = self.db.execute_query(query, {'locality': locality})
+            
+            df = pd.DataFrame(results, columns=[
+                'category', 
+                'country_name', 
+                'locality_type', 
+                'count'
+            ])
+            return df
+        except Exception as e:
+            logger.error(f"Error getting nationality data: {e}")
+            return pd.DataFrame()
+
     def get_event_info(self) -> Dict:
         try:
             query = self._read_sql_file('get_event_info.sql')
@@ -579,6 +595,9 @@ class ExcelGenerator:
                 self._generate_ticket_status_content(writer, event_info)
                 # Close database connection
                 writer.db_manager.close()
+                
+                # Add Local - International Countries tab
+                self._generate_participants_spectators_tab(writer, event_info)
             logger.info(f"Excel file created: {filename}")
             return filename
         except Exception as e:
@@ -749,6 +768,8 @@ class ExcelGenerator:
         # Add Average Age section
         current_row = self._add_average_age_section(worksheet, writer.db_manager, current_row, workbook)
         
+
+        
         # Set column widths
         worksheet.set_column(0, 0, 35)  # Ticket group column
         worksheet.set_column(1, max_col, 10)  # Age range columns (smaller to fit more columns)
@@ -825,6 +846,453 @@ class ExcelGenerator:
             current_row += 2  # Add spacing
         
         return current_row
+
+    def _add_nationality_section(self, worksheet, db_manager, current_row, workbook):
+        """Add nationality section to the worksheet"""
+        # Add formats
+        section_format = workbook.add_format({
+            'bold': True, 
+            'font_size': 12, 
+            'border': 1, 
+            'align': 'left',
+            'bg_color': '#8093B3',
+            'font_color': '#FFFFFF'
+        })
+        header_format = workbook.add_format({
+            'bold': True, 
+            'text_wrap': True, 
+            'valign': 'top', 
+            'border': 1, 
+            'align': 'center',
+            'bg_color': '#8093B3',
+            'font_color': '#FFFFFF'
+        })
+        data_format = workbook.add_format({
+            'align': 'left',
+            'border': 1
+        })
+        number_format = workbook.add_format({
+            'align': 'right',
+            'border': 1
+        })
+        total_format = workbook.add_format({
+            'bold': True,
+            'align': 'right',
+            'border': 1,
+            'bg_color': '#F0F0F0'
+        })
+        
+        # Get nationality data
+        data_provider = DataProvider(db_manager, self.is_breakdown_by_day_enabled)
+        
+        # Get locality from environment (e.g., EVENT_CONFIGS__hongkong__locality=HK)
+        locality = os.getenv(f'EVENT_CONFIGS__{db_manager.schema}__locality', 'HK')
+        nationality_df = data_provider.get_nationality_data(locality)
+        
+        if not nationality_df.empty:
+            # Start at column 5 (right side)
+            right_col = 5
+            
+            # Process athlete data
+            athlete_data = nationality_df[nationality_df['category'] == 'athlete']
+            if not athlete_data.empty:
+                # Write section header
+                worksheet.merge_range(current_row, right_col, current_row, right_col + 3, 'ATHLETE COUNTRIES', section_format)
+                current_row += 1
+                
+                # Write headers
+                worksheet.write(current_row, right_col, 'Country', header_format)
+                worksheet.write(current_row, right_col + 1, 'Local #', header_format)
+                worksheet.write(current_row, right_col + 2, 'International #', header_format)
+                current_row += 1
+                
+                # Get local and international data
+                local_data = athlete_data[athlete_data['locality_type'] == 'Local']
+                international_data = athlete_data[athlete_data['locality_type'] == 'International']
+                
+                # Write local data
+                for _, row in local_data.iterrows():
+                    worksheet.write(current_row, right_col, row['country_name'], data_format)
+                    worksheet.write(current_row, right_col + 1, row['count'], number_format)
+                    worksheet.write(current_row, right_col + 2, '', data_format)
+                    current_row += 1
+                
+                # Write international data
+                for _, row in international_data.iterrows():
+                    worksheet.write(current_row, right_col, row['country_name'], data_format)
+                    worksheet.write(current_row, right_col + 1, '', data_format)
+                    worksheet.write(current_row, right_col + 2, row['count'], number_format)
+                    current_row += 1
+                
+                # Calculate totals
+                local_total = local_data['count'].sum()
+                international_total = international_data['count'].sum()
+                grand_total = local_total + international_total
+                
+                # Write totals
+                worksheet.write(current_row, right_col, 'Grand Total (%)', total_format)
+                worksheet.write(current_row, right_col + 1, f"{local_total} ({local_total/grand_total*100:.0f}%)", total_format)
+                worksheet.write(current_row, right_col + 2, f"{international_total} ({international_total/grand_total*100:.0f}%)", total_format)
+                current_row += 2
+            
+            # Process spectator data
+            spectator_data = nationality_df[nationality_df['category'] == 'spectator']
+            if not spectator_data.empty:
+                # Write section header
+                worksheet.merge_range(current_row, right_col, current_row, right_col + 3, 'SPECTATOR COUNTRIES', section_format)
+                current_row += 1
+                
+                # Write headers
+                worksheet.write(current_row, right_col, 'Country', header_format)
+                worksheet.write(current_row, right_col + 1, 'Local #', header_format)
+                worksheet.write(current_row, right_col + 2, 'International #', header_format)
+                current_row += 1
+                
+                # Get local and international data
+                local_data = spectator_data[spectator_data['locality_type'] == 'Local']
+                international_data = spectator_data[spectator_data['locality_type'] == 'International']
+                
+                # Write local data
+                for _, row in local_data.iterrows():
+                    worksheet.write(current_row, right_col, row['country_name'], data_format)
+                    worksheet.write(current_row, right_col + 1, row['count'], number_format)
+                    worksheet.write(current_row, right_col + 2, '', data_format)
+                    current_row += 1
+                
+                # Write international data
+                for _, row in international_data.iterrows():
+                    worksheet.write(current_row, right_col, row['country_name'], data_format)
+                    worksheet.write(current_row, right_col + 1, '', data_format)
+                    worksheet.write(current_row, right_col + 2, row['count'], number_format)
+                    current_row += 1
+                
+                # Calculate totals
+                local_total = local_data['count'].sum()
+                international_total = international_data['count'].sum()
+                grand_total = local_total + international_total
+                
+                # Write totals
+                worksheet.write(current_row, right_col, 'Grand Total (%)', total_format)
+                worksheet.write(current_row, right_col + 1, f"{local_total} ({local_total/grand_total*100:.0f}%)", total_format)
+                worksheet.write(current_row, right_col + 2, f"{international_total} ({international_total/grand_total*100:.0f}%)", total_format)
+                current_row += 2
+        
+        return current_row
+
+    def _add_nationality_section_to_stats(self, worksheet, db_manager, current_row, workbook, start_col):
+        """Add nationality section to the stats worksheet starting from column I"""
+        # Add formats
+        section_format = workbook.add_format({
+            'bold': True, 
+            'font_size': 12, 
+            'border': 1, 
+            'align': 'left',
+            'bg_color': '#8093B3',
+            'font_color': '#FFFFFF'
+        })
+        header_format = workbook.add_format({
+            'bold': True, 
+            'text_wrap': True, 
+            'valign': 'top', 
+            'border': 1, 
+            'align': 'center',
+            'bg_color': '#8093B3',
+            'font_color': '#FFFFFF'
+        })
+        data_format = workbook.add_format({
+            'align': 'left',
+            'border': 1
+        })
+        number_format = workbook.add_format({
+            'align': 'right',
+            'border': 1
+        })
+        total_format = workbook.add_format({
+            'bold': True,
+            'align': 'right',
+            'border': 1,
+            'bg_color': '#F0F0F0'
+        })
+        
+        # Get nationality data
+        data_provider = DataProvider(db_manager, self.is_breakdown_by_day_enabled)
+        
+        # Get locality from environment (e.g., EVENT_CONFIGS__hongkong__locality=HK)
+        locality = os.getenv(f'EVENT_CONFIGS__{db_manager.schema}__locality', 'HK')
+        nationality_df = data_provider.get_nationality_data(locality)
+        
+        if not nationality_df.empty:
+            # Process athlete data
+            athlete_data = nationality_df[nationality_df['category'] == 'athlete']
+            if not athlete_data.empty:
+                # Write section header
+                worksheet.merge_range(current_row, start_col, current_row, start_col + 3, 'ATHLETE COUNTRIES', section_format)
+                current_row += 1
+                
+                # Write headers
+                worksheet.write(current_row, start_col, 'Country', header_format)
+                worksheet.write(current_row, start_col + 1, 'Local #', header_format)
+                worksheet.write(current_row, start_col + 2, 'International #', header_format)
+                current_row += 1
+                
+                # Get local and international data
+                local_data = athlete_data[athlete_data['locality_type'] == 'Local']
+                international_data = athlete_data[athlete_data['locality_type'] == 'International']
+                
+                # Create a combined view with countries appearing only once
+                all_countries = set()
+                for _, row in local_data.iterrows():
+                    all_countries.add(row['country_name'])
+                for _, row in international_data.iterrows():
+                    all_countries.add(row['country_name'])
+                
+                # Sort countries: local first, then international by count
+                local_dict = {row['country_name']: row['count'] for _, row in local_data.iterrows()}
+                international_dict = {row['country_name']: row['count'] for _, row in international_data.iterrows()}
+                
+                # Write local country first (if exists)
+                for country in sorted(local_dict.keys()):
+                    worksheet.write(current_row, start_col, country, data_format)
+                    worksheet.write(current_row, start_col + 1, local_dict[country], number_format)
+                    worksheet.write(current_row, start_col + 2, '', data_format)
+                    current_row += 1
+                
+                # Write international countries sorted by count
+                sorted_international = sorted(international_dict.items(), key=lambda x: x[1], reverse=True)
+                for country, count in sorted_international:
+                    worksheet.write(current_row, start_col, country, data_format)
+                    worksheet.write(current_row, start_col + 1, '', data_format)
+                    worksheet.write(current_row, start_col + 2, count, number_format)
+                    current_row += 1
+                
+                # Calculate totals
+                local_total = local_data['count'].sum()
+                international_total = international_data['count'].sum()
+                grand_total = local_total + international_total
+                
+                # Write totals
+                worksheet.write(current_row, start_col, 'Grand Total (%)', total_format)
+                worksheet.write(current_row, start_col + 1, f"{local_total} ({local_total/grand_total*100:.0f}%)", total_format)
+                worksheet.write(current_row, start_col + 2, f"{international_total} ({international_total/grand_total*100:.0f}%)", total_format)
+                current_row += 2
+            
+            # Process spectator data
+            spectator_data = nationality_df[nationality_df['category'] == 'spectator']
+            if not spectator_data.empty:
+                # Write section header
+                worksheet.merge_range(current_row, start_col, current_row, start_col + 3, 'SPECTATOR COUNTRIES', section_format)
+                current_row += 1
+                
+                # Write headers
+                worksheet.write(current_row, start_col, 'Country', header_format)
+                worksheet.write(current_row, start_col + 1, 'Local #', header_format)
+                worksheet.write(current_row, start_col + 2, 'International #', header_format)
+                current_row += 1
+                
+                # Get local and international data
+                local_data = spectator_data[spectator_data['locality_type'] == 'Local']
+                international_data = spectator_data[spectator_data['locality_type'] == 'International']
+                
+                # Create a combined view with countries appearing only once
+                all_countries = set()
+                for _, row in local_data.iterrows():
+                    all_countries.add(row['country_name'])
+                for _, row in international_data.iterrows():
+                    all_countries.add(row['country_name'])
+                
+                # Sort countries: local first, then international by count
+                local_dict = {row['country_name']: row['count'] for _, row in local_data.iterrows()}
+                international_dict = {row['country_name']: row['count'] for _, row in international_data.iterrows()}
+                
+                # Write local country first (if exists)
+                for country in sorted(local_dict.keys()):
+                    worksheet.write(current_row, start_col, country, data_format)
+                    worksheet.write(current_row, start_col + 1, local_dict[country], number_format)
+                    worksheet.write(current_row, start_col + 2, '', data_format)
+                    current_row += 1
+                
+                # Write international countries sorted by count
+                sorted_international = sorted(international_dict.items(), key=lambda x: x[1], reverse=True)
+                for country, count in sorted_international:
+                    worksheet.write(current_row, start_col, country, data_format)
+                    worksheet.write(current_row, start_col + 1, '', data_format)
+                    worksheet.write(current_row, start_col + 2, count, number_format)
+                    current_row += 1
+                
+                # Calculate totals
+                local_total = local_data['count'].sum()
+                international_total = international_data['count'].sum()
+                grand_total = local_total + international_total
+                
+                # Write totals
+                worksheet.write(current_row, start_col, 'Grand Total (%)', total_format)
+                worksheet.write(current_row, start_col + 1, f"{local_total} ({local_total/grand_total*100:.0f}%)", total_format)
+                worksheet.write(current_row, start_col + 2, f"{international_total} ({international_total/grand_total*100:.0f}%)", total_format)
+                current_row += 2
+        
+        return current_row
+
+    def _generate_participants_spectators_tab(self, writer, event_info):
+        """Generate Local - International Countries tab"""
+        workbook = writer.book
+        worksheet = workbook.add_worksheet('Local - International')
+        
+        # Add formats
+        title_format = workbook.add_format({
+            'bold': True, 
+            'font_size': 14, 
+            'align': 'left'
+        })
+        header_format = workbook.add_format({
+            'bold': True, 
+            'text_wrap': True, 
+            'valign': 'top', 
+            'border': 1, 
+            'align': 'center',
+            'bg_color': '#8093B3',
+            'font_color': '#FFFFFF'
+        })
+        section_format = workbook.add_format({
+            'bold': True, 
+            'font_size': 12, 
+            'border': 1, 
+            'align': 'left',
+            'bg_color': '#8093B3',
+            'font_color': '#FFFFFF'
+        })
+        data_format = workbook.add_format({
+            'align': 'left',
+            'border': 1
+        })
+        number_format = workbook.add_format({
+            'align': 'right',
+            'border': 1
+        })
+        total_format = workbook.add_format({
+            'bold': True,
+            'align': 'right',
+            'border': 1,
+            'bg_color': '#F0F0F0'
+        })
+        
+        # Write event information
+        event_name = event_info.get('name', 'N/A')
+        worksheet.write(0, 0, f'Event: {event_name}', title_format)
+        
+        # Get nationality data
+        data_provider = DataProvider(writer.db_manager, self.is_breakdown_by_day_enabled)
+        # Get locality from environment variable using the region name
+        region_name = None
+        for key, value in os.environ.items():
+            if key.startswith('EVENT_CONFIGS__') and key.endswith('__schema_name') and value == writer.db_manager.schema:
+                region_name = key.split('__')[1]
+                break
+        
+        if region_name:
+            locality = os.getenv(f'EVENT_CONFIGS__{region_name}__locality', 'HK')
+        else:
+            locality = 'HK'  # fallback
+            
+        nationality_df = data_provider.get_nationality_data(locality)
+        
+        current_row = 2
+        
+        if not nationality_df.empty:
+            # Process athlete data
+            athlete_data = nationality_df[nationality_df['category'] == 'athlete']
+            if not athlete_data.empty:
+                # Write section header
+                worksheet.merge_range(current_row, 0, current_row, 2, 'Athlete Countries', section_format)
+                current_row += 1
+                
+                # Write headers
+                worksheet.write(current_row, 0, 'Country', header_format)
+                worksheet.write(current_row, 1, 'Local #', header_format)
+                worksheet.write(current_row, 2, 'International #', header_format)
+                current_row += 1
+                
+                # Get local and international data
+                local_data = athlete_data[athlete_data['locality_type'] == 'Local'].copy()
+                international_data = athlete_data[athlete_data['locality_type'] == 'International'].copy()
+                
+                # Convert count to numeric
+                local_data['count'] = pd.to_numeric(local_data['count'], errors='coerce')
+                international_data['count'] = pd.to_numeric(international_data['count'], errors='coerce')
+                
+                # Write local country first (should be only one)
+                for _, row in local_data.iterrows():
+                    worksheet.write(current_row, 0, row['country_name'], data_format)
+                    worksheet.write(current_row, 1, int(row['count']) if pd.notna(row['count']) else 0, number_format)
+                    worksheet.write(current_row, 2, '', data_format)
+                    current_row += 1
+                
+                # Write international countries (already sorted by count from SQL)
+                for _, row in international_data.iterrows():
+                    worksheet.write(current_row, 0, row['country_name'], data_format)
+                    worksheet.write(current_row, 1, '', data_format)
+                    worksheet.write(current_row, 2, int(row['count']) if pd.notna(row['count']) else 0, number_format)
+                    current_row += 1
+                
+                # Calculate totals
+                local_total = local_data['count'].sum()
+                international_total = international_data['count'].sum()
+                grand_total = float(local_total) + float(international_total)
+                
+                # Write totals
+                worksheet.write(current_row, 0, 'Grand Total (%)', total_format)
+                worksheet.write(current_row, 1, f"{int(local_total)} ({local_total/grand_total*100:.0f}%)", total_format)
+                worksheet.write(current_row, 2, f"{int(international_total)} ({international_total/grand_total*100:.0f}%)", total_format)
+                current_row += 2
+            
+            # Process spectator data
+            spectator_data = nationality_df[nationality_df['category'] == 'spectator']
+            if not spectator_data.empty:
+                # Write section header
+                worksheet.merge_range(current_row, 0, current_row, 2, 'Spectator Countries', section_format)
+                current_row += 1
+                
+                # Write headers
+                worksheet.write(current_row, 0, 'Country', header_format)
+                worksheet.write(current_row, 1, 'Local #', header_format)
+                worksheet.write(current_row, 2, 'International #', header_format)
+                current_row += 1
+                
+                # Get local and international data
+                local_data = spectator_data[spectator_data['locality_type'] == 'Local'].copy()
+                international_data = spectator_data[spectator_data['locality_type'] == 'International'].copy()
+                
+                # Convert count to numeric
+                local_data['count'] = pd.to_numeric(local_data['count'], errors='coerce')
+                international_data['count'] = pd.to_numeric(international_data['count'], errors='coerce')
+                
+                # Write local country first (should be only one)
+                for _, row in local_data.iterrows():
+                    worksheet.write(current_row, 0, row['country_name'], data_format)
+                    worksheet.write(current_row, 1, int(row['count']) if pd.notna(row['count']) else 0, number_format)
+                    worksheet.write(current_row, 2, '', data_format)
+                    current_row += 1
+                
+                # Write international countries (already sorted by count from SQL)
+                for _, row in international_data.iterrows():
+                    worksheet.write(current_row, 0, row['country_name'], data_format)
+                    worksheet.write(current_row, 1, '', data_format)
+                    worksheet.write(current_row, 2, int(row['count']) if pd.notna(row['count']) else 0, number_format)
+                    current_row += 1
+                
+                # Calculate totals
+                local_total = local_data['count'].sum()
+                international_total = international_data['count'].sum()
+                grand_total = float(local_total) + float(international_total)
+                
+                # Write totals
+                worksheet.write(current_row, 0, 'Grand Total (%)', total_format)
+                worksheet.write(current_row, 1, f"{int(local_total)} ({local_total/grand_total*100:.0f}%)", total_format)
+                worksheet.write(current_row, 2, f"{int(international_total)} ({international_total/grand_total*100:.0f}%)", total_format)
+                current_row += 2
+        
+        # Set column widths
+        worksheet.set_column(0, 0, 25)  # Country column
+        worksheet.set_column(1, 2, 15)  # Number columns
 
     def _create_combined_divisions(self, df: pd.DataFrame) -> pd.DataFrame:
         """Create combined divisions without day separation"""
@@ -1297,6 +1765,8 @@ class ExcelGenerator:
         # Right side content
         right_col = 9  # Added one column space for separation
         current_row = 2
+        
+
         
         # 1. Sportograf Summary
         worksheet.merge_range(current_row, right_col, current_row, right_col + 1, 'Sportograf Package Summary', section_format)
