@@ -635,21 +635,10 @@ class TicketProcessor:
         self.region = region
         self.processed = 0
         self.failed = 0
-        self.existing_tickets_cache = {}
         self.field_mapper = CustomFieldMapper(schema, region)
         self.addon_processor = AddonProcessor(session, schema)
         self.force_addon_update = True  # Force update addon data
 
-    def get_existing_ticket(self, ticket_id: str) -> Optional[Ticket]:
-        """Efficiently lookup ticket from cache or database"""
-        cache_key = f"{ticket_id}_{self.schema}"
-        if cache_key not in self.existing_tickets_cache:
-            ticket = self.session.query(Ticket).filter(
-                Ticket.id == ticket_id,
-                Ticket.region_schema == self.schema
-            ).first()
-            self.existing_tickets_cache[cache_key] = ticket
-        return self.existing_tickets_cache[cache_key]
     
     def process_ticket(self, ticket_data: Dict, event_data: Dict) -> Optional[Ticket]:
         """Process single ticket with validation and efficient lookup"""
@@ -694,64 +683,53 @@ class TicketProcessor:
                 logger.debug(f"Ticket {ticket_id} raw addOns: {raw_addons}")
                 logger.debug(f"Ticket {ticket_id} processed addon: {addon_data}")
             
-            # Check if ticket exists
-            existing_ticket = self.get_existing_ticket(ticket_id)
-            if existing_ticket:
-                # Always update addon data for existing tickets
-                if self.force_addon_update or existing_ticket.addons != addon_data:
-                    existing_ticket.addons = addon_data
-                    logger.debug(f"Updated existing ticket {ticket_id} addon: {addon_data}")
-                    self.processed += 1  # Count as processed since we updated it
-                return existing_ticket
-            else:
-                # Create new ticket
-                ticket_values = {
-                    'id': ticket_id,
-                    'region_schema': self.schema,
-                    'transaction_id': ticket_data.get("transactionId"),
-                    'ticket_type_id': ticket_data.get("ticketTypeId"),
-                    'currency': ticket_data.get("currency"),
-                    'status': ticket_data.get("status"),
-                    'personalized': ticket_data.get("personalized", False),
-                    'expired': ticket_data.get("expired", False),
-                    'event_id': event_id,
-                    'ticket_name': ticket_name,
-                    'category_name': ticket_data.get("categoryName"),
-                    'barcode': ticket_data.get("barcode"),
-                    'created_at': parse_datetime(ticket_data.get("createdAt")),
-                    'updated_at': parse_datetime(ticket_data.get("updatedAt")),
-                    'city': ticket_data.get("city"),
-                    'country': ticket_data.get("country"),
-                    'customer_id': ticket_data.get("customerId"),
-                    'gender': standardize_gender(extra_fields.get("gender")),
-                    'birthday': extra_fields.get("birth_date"),
-                    'age': calculate_age(extra_fields.get("birth_date")),
-                    'nationality': extra_fields.get("nationality"),
-                    'region_of_residence': extra_fields.get("region_of_residence"),
-                    'is_gym_affiliate': extra_fields.get("hyrox_training_clubs"),
-                    'gym_affiliate': self.field_mapper.get_gym_affiliate(extra_fields),
-                    'gym_affiliate_location': self.field_mapper.get_gym_affiliate_location(extra_fields),
-                    'is_returning_athlete': normalize_yes_no(extra_fields.get("returning_athlete")),
-                    'is_returning_athlete_to_city': normalize_yes_no(extra_fields.get("returning_athlete_city")),
-                    'is_under_shop': is_under_shop,
-                    'under_shop_id': under_shop_id,
-                    'addons': addon_data  # Now just a string or None
-                }
-                new_ticket = Ticket(**ticket_values)
-                self.session.add(new_ticket)
-                self.existing_tickets_cache[f"{ticket_id}_{self.schema}"] = new_ticket
-                logger.debug(f"Created new ticket {ticket_id} with addon: {addon_data}")
-                self.processed += 1
-                return new_ticket
+            # Prepare ticket values
+            ticket_values = {
+                'id': ticket_id,
+                'region_schema': self.schema,
+                'transaction_id': ticket_data.get("transactionId"),
+                'ticket_type_id': ticket_data.get("ticketTypeId"),
+                'currency': ticket_data.get("currency"),
+                'status': ticket_data.get("status"),
+                'personalized': ticket_data.get("personalized", False),
+                'expired': ticket_data.get("expired", False),
+                'event_id': event_id,
+                'ticket_name': ticket_name,
+                'category_name': ticket_data.get("categoryName"),
+                'barcode': ticket_data.get("barcode"),
+                'created_at': parse_datetime(ticket_data.get("createdAt")),
+                'updated_at': parse_datetime(ticket_data.get("updatedAt")),
+                'city': ticket_data.get("city"),
+                'country': ticket_data.get("country"),
+                'customer_id': ticket_data.get("customerId"),
+                'gender': standardize_gender(extra_fields.get("gender")),
+                'birthday': extra_fields.get("birth_date"),
+                'age': calculate_age(extra_fields.get("birth_date")),
+                'nationality': extra_fields.get("nationality"),
+                'region_of_residence': extra_fields.get("region_of_residence"),
+                'is_gym_affiliate': extra_fields.get("hyrox_training_clubs"),
+                'gym_affiliate': self.field_mapper.get_gym_affiliate(extra_fields),
+                'gym_affiliate_location': self.field_mapper.get_gym_affiliate_location(extra_fields),
+                'is_returning_athlete': normalize_yes_no(extra_fields.get("returning_athlete")),
+                'is_returning_athlete_to_city': normalize_yes_no(extra_fields.get("returning_athlete_city")),
+                'is_under_shop': is_under_shop,
+                'under_shop_id': under_shop_id,
+                'addons': addon_data  # Now just a string or None
+            }
+            
+            # Use merge() instead of add() to handle duplicates gracefully
+            # This will either insert a new ticket or update an existing one
+            ticket = Ticket(**ticket_values)
+            merged_ticket = self.session.merge(ticket)
+            logger.debug(f"Upserted ticket {ticket_id} with addon: {addon_data}")
+            self.processed += 1
+            return merged_ticket
 
         except Exception as e:
             logger.error(f"Error processing ticket {ticket_id}: {str(e)}")
             self.failed += 1
             return None
 
-    def clear_cache(self):
-        """Clear the lookup cache"""
-        self.existing_tickets_cache.clear()
 
 def process_batch(session, tickets: List, event_data: Dict, schema: str, region: str):
     """Process batch of tickets using TicketProcessor"""
@@ -770,7 +748,6 @@ def process_batch(session, tickets: List, event_data: Dict, schema: str, region:
             logger.error(f"Failed to process ticket {ticket.get('_id')}: {str(e)}")
             continue
     
-    processor.clear_cache()
     logger.info(f"Batch summary - Processed: {processed}, Failed: {failed}")
     return processed
 
