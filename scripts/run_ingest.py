@@ -77,6 +77,7 @@ def main():
             'ingest_static_data.py',  # Run static data ingest first
             'ingest_events_tickets.py',  # Run main ingest
             # 'ingest_age_groups.py',   # Run age group ingest -- Commented out for manual ingestion
+            'ticket_analytics.py',
         ]
         
         # Run scripts in sequence, stop if any fails

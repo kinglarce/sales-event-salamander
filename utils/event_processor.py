@@ -11,6 +11,7 @@ class TicketCategory(Enum):
     EXTRA = "extra"
     
 class TicketEventDay(Enum):
+    THURSDAY = "thursday"
     FRIDAY = "friday"
     SATURDAY = "saturday"
     SUNDAY = "sunday"
@@ -29,7 +30,7 @@ def determine_ticket_group(ticket_name: str) -> TicketCategory:
     return TicketCategory.SINGLE
 
 def determine_ticket_event_day(ticket_name: str) -> TicketEventDay:
-    """Determine basic ticket group (friday, saturday, sunday)"""
+    """Determine basic ticket group (thursday, friday, saturday, sunday)"""
     name_lower = ticket_name.lower()
     if 'sunday' in name_lower:
         return TicketEventDay.SUNDAY 
@@ -37,4 +38,6 @@ def determine_ticket_event_day(ticket_name: str) -> TicketEventDay:
         return TicketEventDay.SATURDAY
     elif 'friday' in name_lower:
         return TicketEventDay.FRIDAY
+    elif 'thursday' in name_lower:
+        return TicketEventDay.THURSDAY
     return TicketEventDay.SATURDAY 

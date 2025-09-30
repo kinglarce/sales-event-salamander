@@ -29,7 +29,7 @@ python scripts/run_ingest.py >> /app/logs/cron.log 2>&1' > /app/run_cron.sh
 RUN chmod +x /app/run_cron.sh
 
 # Create the cron job file
-RUN echo "*/10 * * * * /app/run_cron.sh" > /etc/cron.d/analytics-cron
+RUN echo "*/15 * * * * /app/run_cron.sh" > /etc/cron.d/analytics-cron
 
 # Give execution rights to the cron job
 RUN chmod 0644 /etc/cron.d/analytics-cron

@@ -4,6 +4,7 @@ WITH gender_mismatch_base AS (
         t.gender,
         COUNT(*) as count,
         CASE 
+            WHEN UPPER(t.ticket_name) LIKE '%THURSDAY%' THEN 'THURSDAY'
             WHEN UPPER(t.ticket_name) LIKE '%FRIDAY%' THEN 'FRIDAY'
             WHEN UPPER(t.ticket_name) LIKE '%SATURDAY%' THEN 'SATURDAY'
             WHEN UPPER(t.ticket_name) LIKE '%SUNDAY%' THEN 'SUNDAY'
@@ -26,6 +27,7 @@ gender_mismatch_details AS (
         t.ticket_type_id,
         t.category_name,
         CASE 
+            WHEN UPPER(t.ticket_name) LIKE '%THURSDAY%' THEN 'THURSDAY'
             WHEN UPPER(t.ticket_name) LIKE '%FRIDAY%' THEN 'FRIDAY'
             WHEN UPPER(t.ticket_name) LIKE '%SATURDAY%' THEN 'SATURDAY'
             WHEN UPPER(t.ticket_name) LIKE '%SUNDAY%' THEN 'SUNDAY'
@@ -56,9 +58,10 @@ JOIN gender_mismatch_details d ON b.ticket_name = d.ticket_name AND b.gender = d
 GROUP BY b.ticket_name, b.gender, b.count, b.event_day
 ORDER BY 
     CASE 
-        WHEN b.event_day = 'FRIDAY' THEN 1
-        WHEN b.event_day = 'SATURDAY' THEN 2
-        WHEN b.event_day = 'SUNDAY' THEN 3
-        ELSE 4
+        WHEN b.event_day = 'THURSDAY' THEN 1
+        WHEN b.event_day = 'FRIDAY' THEN 2
+        WHEN b.event_day = 'SATURDAY' THEN 3
+        WHEN b.event_day = 'SUNDAY' THEN 4
+        ELSE 5
     END,
     b.ticket_name

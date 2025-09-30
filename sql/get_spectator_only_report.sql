@@ -34,10 +34,11 @@ FROM (
 ) summary
 ORDER BY 
     CASE summary.ticket_event_day
-        WHEN 'FRIDAY' THEN 1
-        WHEN 'SATURDAY' THEN 2
-        WHEN 'SUNDAY' THEN 3
-        WHEN '2 DAYS' THEN 4
-        WHEN '3 DAYS' THEN 5
-        ELSE 6
+        WHEN 'THURSDAY' THEN 1
+        WHEN 'FRIDAY' THEN 2
+        WHEN 'SATURDAY' THEN 3
+        WHEN 'SUNDAY' THEN 4
+        WHEN '2 DAYS' THEN 5
+        WHEN '3 DAYS' THEN 6
+        ELSE 7
     END; 
