@@ -1,0 +1,62 @@
+name: "parallel_ingestion"
+description: "Parallel ingestion pipeline for faster execution"
+parallel_execution: true
+max_parallel_steps: 3
+stop_on_failure: true
+retry_failed_steps: true
+max_retries: 3
+
+steps:
+  - name: "static_data_ingestion"
+    function: "static_data_ingestion"
+    enabled: true
+    retry_count: 0
+    max_retries: 3
+    timeout: 300.0
+    depends_on: []
+    condition: null
+
+  - name: "events_tickets_ingestion"
+    function: "events_tickets_ingestion"
+    enabled: true
+    retry_count: 0
+    max_retries: 3
+    timeout: 1800.0
+    depends_on: ["static_data_ingestion"]
+    condition: null
+
+  - name: "coupon_ingestion"
+    function: "coupon_ingestion"
+    enabled: true
+    retry_count: 0
+    max_retries: 3
+    timeout: 600.0
+    depends_on: ["events_tickets_ingestion"]
+    condition: null
+
+  - name: "age_groups_ingestion"
+    function: "age_groups_ingestion"
+    enabled: true
+    retry_count: 0
+    max_retries: 3
+    timeout: 600.0
+    depends_on: ["events_tickets_ingestion"]
+    condition: null
+
+  - name: "gender_fix_ingestion"
+    function: "gender_fix_ingestion"
+    enabled: true
+    retry_count: 0
+    max_retries: 3
+    timeout: 600.0
+    depends_on: ["events_tickets_ingestion"]
+    condition: null
+
+  - name: "analytics_processing"
+    function: "analytics_processing"
+    enabled: true
+    retry_count: 0
+    max_retries: 3
+    timeout: 300.0
+    depends_on: ["events_tickets_ingestion", "age_groups_ingestion"]
+    condition: null

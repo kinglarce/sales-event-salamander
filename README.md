@@ -1,158 +1,123 @@
 # Sales Data Pipeline Salamander 🦎
 
-A robust data pipeline for fetching and processing events and ticket data, built with Python, PostgreSQL, and Docker.
+A comprehensive data ingestion and processing system for Vivenu events and tickets, supporting both legacy (v1) and modern (v2) architectures.
 
-## Project Structure
+## 🏗️ Project Structure
+
 ```
-pipeline/
-├── models/
-│   └── database.py      # SQLAlchemy models
-├── data_static/ 
-│   └── schemas/         # SQL schema for static data
-│       └── region1.json
-├── sql/
-│   ├── get_current_summary.sql
-│   └── get_ticket_counts.sql
-├── .env.example
-├── Dockerfile
-├── Dockerfile.cron
-├── docker-compose.yml
-├── ingest.py            # Main ingestion script
-├── requirements.txt
-└── ticket_analytics.py  # Analytics processing
+├── main.py                    # Main entry point (supports both v1 and v2)
+├── README.md                  # This file
+├── requirements.txt           # Python dependencies
+├── docker-compose.yml         # Docker configuration
+├── Dockerfile                 # Main Docker image
+├── Dockerfile.cron            # Cron job Docker image
+│
+├── v1/                        # Legacy system (v1)
+│   ├── run_ingest.py         # Main v1 orchestration
+│   ├── ingest_*.py           # v1 ingestion scripts
+│   ├── ticket_analytics.py   # v1 analytics
+│   └── ...                   # Other v1 scripts
+│
+├── v2/                        # Modern system (v2)
+│   ├── run_ingest_v2.py      # Main v2 orchestration
+│   ├── core/                 # Core modules
+│   │   ├── config.py         # Configuration management
+│   │   ├── logging.py        # Logging setup
+│   │   ├── database.py       # Database management
+│   │   ├── http_client.py    # HTTP client factory
+│   │   ├── batch_processor.py # Batch processing
+│   │   └── pipeline.py       # Pipeline management
+│   ├── ingest_*_v2.py        # v2 ingestion scripts
+│   ├── pipeline_configs/     # Pipeline configurations
+│   ├── examples/             # Usage examples
+│   └── README_V2.md          # v2 documentation
+│
+├── models/                    # Shared data models
+│   ├── __init__.py
+│   └── database.py
+│
+├── sql/                       # Shared SQL queries
+│   ├── get_*.sql             # Query files
+│   ├── setup_*.sql           # Setup scripts
+│   └── upsert_*.sql          # Upsert scripts
+│
+├── utils/                     # Shared utilities
+│   ├── __init__.py
+│   ├── event_processor.py
+│   ├── addon_processor.py
+│   └── under_shop_processor.py
+│
+├── scripts/                   # Shared scripts
+│
+├── data/                      # Data files
+├── data_static/              # Static configuration data
+├── logs/                     # Log files
+├── slack_bot/                # Slack bot integration
+└── references/               # Reference implementations
 ```
 
-## Features
+## 🚀 Quick Start
 
-- Asynchronous API data fetching with rate limiting
-- Concurrent processing of multiple regions
-- Automatic schema and table creation
-- Upsert logic for data updates
-- Ticket type summary generation
-- Category capacity tracking
-- Docker containerization
-- Environment-based configuration
-- Database visualization with pgweb
-- Automated data ingestion via cron jobs
-- Slack notification for ticket sales report
-- Static data for event capacity and ticket capacity
-
-## Prerequisites
+### Prerequisites
 
 - Docker and Docker Compose
-- Python 3.11+
-- PostgreSQL 15+
+- PostgreSQL database (can be run in Docker)
 
 ## Configuration
 
-1. Create a `.env` file based on `.env.example`:
+1. **Clone the repository**
+   ```bash
+   git clone <repository-url>
+   cd vivenu-events-ticket-scrapper
+   ```
 
-```env
-# Database settings
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=your_secure_password
-POSTGRES_HOST=postgres
-POSTGRES_PORT=5432
-POSTGRES_DB=yourdb
+2. **Set up environment variables**
+   ```bash
+   cp .env.example .env
+   # Edit .env with your configuration
+   ```
 
-# Slack config
-SLACK_API_TOKEN=xoxb-XXXX
+3. **Build and start Docker containers**
+   ```bash
+   docker-compose up -d
+   ```
 
-# Ticket analytics config
-PROJECTION_MINUTES=3
-HISTORY_MINUTES=15
-ENABLE_GROWTH_ANALYSIS=false
-ENABLE_PROJECTIONS=false
-ENABLE_FILE_LOGGING=true
+### Running the System
 
-# API config
-EVENT_API_BASE_URL=
+#### Using Docker (Recommended)
 
-# Event configurations
-EVENT_CONFIGS__region1__token=your_api_token_1
-EVENT_CONFIGS__region1__event_id=your_event_id_1
-EVENT_CONFIGS__region1__schema_name=region1
-EVENT_CONFIGS__region1__max_capacity=5000
-EVENT_CONFIGS__region1__start_wave=50
-EVENT_CONFIGS__region1__price_tier=L1
-EVENT_CONFIGS__region1__REPORTING_CHANNEL=region1-channel
-
-EVENT_CONFIGS__region2__token=your_api_token_2
-EVENT_CONFIGS__region2__event_id=your_event_id_2
-EVENT_CONFIGS__region2__schema_name=region2
-EVENT_CONFIGS__region2__max_capacity=4000
-EVENT_CONFIGS__region2__start_wave=40
-EVENT_CONFIGS__region2__price_tier=L2
-EVENT_CONFIGS__region2__REGISTRATION_CHANNEL=region2-channel
-EVENT_CONFIGS__region2__REPORTING_CHANNEL=region2-channel
-EVENT_CONFIGS__region2__summary_breakdown_day=true
-EVENT_CONFIGS__region2__field_gender=custom_local_gender_identified
-
-EVENT_CONFIGS__region3__token=your_api_token_3
-EVENT_CONFIGS__region3__event_id=your_event_id_3
-EVENT_CONFIGS__region3__schema_name=region3_city
-EVENT_CONFIGS__region3__max_capacity=5000
-EVENT_CONFIGS__region3__start_wave=55
-EVENT_CONFIGS__region3__price_tier=L1
-EVENT_CONFIGS__region3__REGISTRATION_CHANNEL=region3-channel
-EVENT_CONFIGS__region3__REPORTING_CHANNEL=region3-channel
-EVENT_CONFIGS__region3__summary_breakdown_day=true
-EVENT_CONFIGS__region3__exclude_adaptive_sunday=true
-EVENT_CONFIGS__region3__field_gender=custom_local_gender_identified
-```
-
-## Installation & Usage
-
-### Using Docker (Recommended)
-
-1. Build and start all containers:
 ```bash
-docker-compose up --build
-```
 
-2. Run in detached mode:
-```bash
-docker-compose up -d
-```
-
-
-3. View logs:
-```bash
-# View all container logs
-docker-compose logs -f
-
-# View specific container logs
-docker-compose logs -f app
-docker-compose logs -f cron
-```
-
-4. Stop containers:
-```bash
-docker-compose down
-```
-### Automatic Ingestion, Ticket Analytics and Slack Notification
-```bash
-# Re-build app for Environment changes
 docker-compose up --build -d app
 docker-compose up --build -d app cron
 
-# Run for Ingesting Event & Tickets Data 
-docker exec -it vivenu-app python scripts/run_ingest.py
+# Run v1 system (default)
+docker exec -it vivenu-app python main.py --version v1
 
-# Run for Ingesting Age Group Data
-docker exec -it vivenu-app python ingest_age_groups.py
+# Run v2 system
+docker exec -it vivenu-app python main.py --version v2
 
-# Run for Ingesting Static Data
-docker exec -it vivenu-app python ingest_static_data.py
+# Run v2 with custom pipeline
+docker exec -it vivenu-app python main.py --version v2 --pipeline-config v2/pipeline_configs/custom.yaml
 
+# Run v1 with specific script
+docker exec -it vivenu-app python main.py --version v1 --script ingest_events_tickets
+
+# Age group
+docker exec -it vivenu-app python main.py --version v1 --script ingest_age_groups
+
+# Reporting Excel
+docker exec -it vivenu-app python main.py --version v1 --script ingest_age_groups
+
+#other
 # Run for Reporting Registration Data to Slack
 docker exec -it vivenu-app python ticket_analytics.py
 
 # Run for Reporting only for sending Specatator sales to Slack
-docker exec -it vivenu-app python scripts/run_ingest.py && docker exec -it vivenu-app python spectator_analytics.py
+docker exec -it vivenu-app python main.py --version v1 && docker exec -it vivenu-app python main.py --version v1 --script spectator_analytics.py
 
 # Run for Reporting Excel data and sending to Slack
-docker exec -it vivenu-app python reporting_analytics.py --excel
+docker exec -it vivenu-app python v1/reporting_analytics.py --excel
 docker exec -it vivenu-app python reporting_analytics.py --slack --excel
 
 # Run for Reporting for Cou[ons] Excel data and sending to Slack
@@ -165,131 +130,398 @@ docker exec -it vivenu-app python coupon_analytics.py --summary
 docker exec -it vivenu-app python coupon_analytics.py --excel my_report.xlsx
 ```
 
+#### Using Docker Compose
 
-### Manual Data Ingestion
-
-Run the ingest script manually:
 ```bash
-# Regular ingestion
-python ingest.py
+# Run v1 system
+docker-compose exec app python main.py --version v1
 
-# With debug logging
-python ingest.py --debug
+# Run v2 system
+docker-compose exec app python main.py --version v2
 
-# Skip API fetch (only update summaries)
-python ingest.py --skip_fetch
+# Run with debug logging
+docker-compose exec app python main.py --version v2 --debug
 ```
 
-### Running Analytics
+#### Direct Docker Execution
 
-Run the ticket analytics script:
 ```bash
-python ticket_analytics.py
+# Build image
+docker build -t vivenu-scrapper .
+
+# Run v1 system
+docker run -v $(pwd)/.env:/app/.env vivenu-scrapper python main.py --version v1
+
+# Run v2 system
+docker run -v $(pwd)/.env:/app/.env vivenu-scrapper python main.py --version v2
 ```
 
-## Undershops
+#### Local Development (Optional)
 
-- **PARTNERACCESS**: Use this prefix for under shops that are part of the partner access program.
-- **HTCACCESS**: Use this prefix for under shops associated with HTC access.
+If you want to run locally without Docker:
 
-## Cron Jobs
-
-The pipeline includes automated data ingestion and analytics via cron jobs. The schedule is configured in `Dockerfile.cron`:
-
-```dockerfile
-# Default schedule (every 5 minutes)
-*/5 * * * * cd /app && python ingest.py >> /app/logs/cron.log 2>&1
-
-# Analytics schedule (every 15 minutes)
-*/15 * * * * cd /app && python ticket_analytics.py >> /app/logs/analytics.log 2>&1
-```
-
-To modify the schedule:
-1. Edit `Dockerfile.cron`
-2. Rebuild the cron container:
 ```bash
-docker-compose up -d --build app cron
+# Install dependencies
+pip install -r requirements.txt
+
+# Run v1 system
+python main.py --version v1
+
+# Run v2 system
+python main.py --version v2
 ```
 
-## Database Schema
+## 📊 System Versions
 
-The pipeline creates the following tables for each configured region:
+### V1 System (Legacy)
+- **Purpose**: Original implementation
+- **Architecture**: Monolithic scripts
+- **Features**: Basic ingestion and processing
+- **Use Case**: Legacy support, simple workflows
 
-1. `events` - Stores event information
-   - id (PK)
-   - name
-   - location_name
-   - start_date
-   - end_date
-   - timezone
+**Key Scripts:**
+- `v1/run_ingest.py` - Main orchestration
+- `v1/ingest_events_tickets.py` - Events and tickets
+- `v1/ingest_coupons.py` - Coupon processing
+- `v1/ticket_analytics.py` - Analytics
 
-2. `tickets` - Stores ticket information
-   - id (PK)
-   - event_id (FK)
-   - ticket_type_id
-   - status
-   - created_at
-   - customer_info
+### V2 System (Modern)
+- **Purpose**: Refactored with best practices
+- **Architecture**: Modular, configurable
+- **Features**: Pipeline system, parallel execution, monitoring
+- **Use Case**: Production workloads, complex workflows
 
-3. `ticket_summary` - Summarizes ticket counts by type
-   - id (PK)
-   - event_id (FK)
-   - ticket_type_id
-   - total_count
-   - updated_at
+**Key Components:**
+- `v2/core/` - Core modules
+- `v2/run_ingest_v2.py` - Main orchestration
+- `v2/pipeline_configs/` - Pipeline configurations
+- `v2/examples/` - Usage examples
 
-4. `summary_report` - Stores historical ticket count data
-   - id (PK)
-   - event_id
-   - ticket_group
-   - total_count
-   - created_at
+## 🔧 Configuration
 
-5. `ticket_under_shops` - Stores under shop information
-   - id (PK)
-   - shop_name
-   - shop_category
-   - created_at
-   - updated_at
+### Environment Variables
 
-### Accessing pgweb
+Create a `.env` file in the project root:
 
-Once the containers are running, access the pgweb interface at:
+```env
+# Database
+DATABASE_URL=postgresql://user:password@host:port/database
+
+# API Configuration
+VIVENU_API_TOKEN=your_token_here
+EVENT_API_BASE_URL=https://api.vivenu.com
+
+# Logging
+LOG_LEVEL=INFO
+ENABLE_FILE_LOGGING=true
+DEBUG_MODE=false
+
+# HTTP Client (v2)
+HTTPX_TIMEOUT_CONNECT=10.0
+HTTPX_TIMEOUT_READ=30.0
+HTTPX_MAX_CONNECTIONS=100
+HTTPX_RETRIES=3
+HTTPX_HTTP2=false
+HTTPX_VERIFY_SSL=false
+
+# Event Configurations
+EVENT_CONFIGS__australia__token=token_australia
+EVENT_CONFIGS__australia__event_id=event_id_australia
+EVENT_CONFIGS__australia__schema_name=australia
 ```
-http://localhost:8081
+
+### V2 Pipeline Configuration
+
+Create custom pipeline configurations in YAML or JSON:
+
+```yaml
+# v2/pipeline_configs/custom.yaml
+name: "custom_ingestion"
+description: "Custom ingestion pipeline"
+parallel_execution: true
+max_parallel_steps: 3
+stop_on_failure: true
+
+steps:
+  - name: "static_data_ingestion"
+    function: "static_data_ingestion"
+    enabled: true
+    timeout: 300.0
+    depends_on: []
+    
+  - name: "events_tickets_ingestion"
+    function: "events_tickets_ingestion"
+    enabled: true
+    timeout: 1800.0
+    depends_on: ["static_data_ingestion"]
 ```
 
-## Troubleshooting
+## 🐳 Docker Usage
 
-1. Check container status:
+### Quick Start with Docker
+
 ```bash
-docker-compose ps
-```
-
-2. View container logs:
-```bash
-docker-compose logs -f [service_name]
-```
-
-3. Access container shell:
-```bash
-docker-compose exec [service_name] bash
-```
-
-4. Reset database:
-```bash
-docker-compose down -v
+# 1. Start the application container
 docker-compose up -d
+docker-compose up --build -d app
+docker-compose up --build -d app cron
+
+# 2. Run v1 system
+docker exec -it vivenu-app python main.py --version v1
+
+# 3. Run v2 system
+docker exec -it vivenu-app python main.py --version v2
 ```
 
-## Contributing
+### Common Docker Commands
+
+```bash
+# Start containers
+docker-compose up -d
+
+# Stop containers
+docker-compose down
+
+# View logs
+docker-compose logs -f app
+
+# Access container shell
+docker exec -it vivenu-app bash
+
+# Run specific scripts
+docker exec -it vivenu-app python v1/run_ingest.py
+docker exec -it vivenu-app python v2/run_ingest_v2.py
+
+# Run with debug logging
+docker exec -it vivenu-app python main.py --version v2 --debug
+
+# Run with custom pipeline
+docker exec -it vivenu-app python main.py --version v2 --pipeline-config v2/pipeline_configs/custom.yaml
+```
+
+### Docker Compose Services
+
+```bash
+# Run v1 system
+docker-compose exec app python main.py --version v1
+
+# Run v2 system
+docker-compose exec app python main.py --version v2
+
+# Run with environment variables
+docker-compose exec -e DEBUG_MODE=true app python main.py --version v2 --debug
+```
+
+### Building Custom Images
+
+```bash
+# Build main image
+docker build -t vivenu-scrapper .
+
+# Build cron image
+docker build -f Dockerfile.cron -t vivenu-scrapper-cron .
+
+# Run with custom image
+docker run -v $(pwd)/.env:/app/.env vivenu-scrapper python main.py --version v1
+```
+
+### Cron Job Setup
+
+For scheduled execution using Docker:
+
+```bash
+# Build cron image
+docker build -f Dockerfile.cron -t vivenu-scrapper-cron .
+
+# Run cron job (v1 system)
+docker run --rm -v $(pwd)/.env:/app/.env vivenu-scrapper-cron
+
+# Run cron job (v2 system)
+docker run --rm -v $(pwd)/.env:/app/.env -e VERSION=v2 vivenu-scrapper-cron
+
+# Run with custom pipeline
+docker run --rm -v $(pwd)/.env:/app/.env -e VERSION=v2 -e PIPELINE_CONFIG=v2/pipeline_configs/custom.yaml vivenu-scrapper-cron
+```
+
+### Docker Environment Variables
+
+```bash
+# Set version
+docker exec -it vivenu-app -e VERSION=v2 python main.py
+
+# Set debug mode
+docker exec -it vivenu-app -e DEBUG_MODE=true python main.py --version v2 --debug
+
+# Set custom pipeline
+docker exec -it vivenu-app -e PIPELINE_CONFIG=v2/pipeline_configs/custom.yaml python main.py --version v2
+```
+
+### Docker Cron Job Examples
+
+```bash
+# Run v1 system via cron
+docker exec -it vivenu-app python main.py --version v1
+
+# Run v2 system via cron
+docker exec -it vivenu-app python main.py --version v2
+
+# Run v2 with debug logging
+docker exec -it vivenu-app python main.py --version v2 --debug
+
+# Run v2 with custom pipeline
+docker exec -it vivenu-app python main.py --version v2 --pipeline-config v2/pipeline_configs/custom.yaml
+
+# Run v2 with predefined pipeline
+docker exec -it vivenu-app python main.py --version v2 --pipeline-name minimal
+```
+
+### Docker Compose with Environment Variables
+
+```yaml
+# docker-compose.yml
+version: '3.8'
+services:
+  app:
+    build: .
+    environment:
+      - VERSION=v2
+      - DEBUG_MODE=false
+      - PIPELINE_CONFIG=v2/pipeline_configs/default.yaml
+    volumes:
+      - ./.env:/app/.env
+      - ./logs:/app/logs
+```
+
+```bash
+# Run with environment variables
+docker-compose exec app python main.py
+```
+
+## 📈 Monitoring and Logging
+
+### Log Files
+- **Location**: `logs/` directory
+- **Format**: `{script_name}_{timestamp}.log`
+- **Levels**: DEBUG, INFO, WARNING, ERROR
+
+### V2 Performance Monitoring
+- Built-in performance tracking
+- Step execution times
+- Resource usage monitoring
+- Progress tracking
+
+## 🧪 Testing
+
+### Unit Tests
+```bash
+# Run v1 tests
+python -m pytest v1/tests/
+
+# Run v2 tests
+python -m pytest v2/tests/
+```
+
+### Integration Tests
+```bash
+# Test v1 system
+python v1/run_ingest.py --test
+
+# Test v2 system
+python v2/run_ingest_v2.py --test
+```
+
+## 🔄 Migration Guide
+
+### From V1 to V2
+
+1. **Update imports**:
+   ```python
+   # Old
+   from ingest_events_tickets import main_ingest_events_tickets
+   
+   # New
+   from v2.ingest_events_tickets_v2 import main_ingest_events_tickets
+   ```
+
+2. **Update configuration**:
+   ```python
+   # Old
+   from dotenv import load_dotenv
+   load_dotenv()
+   
+   # New
+   from v2.core import get_config
+   config = get_config()
+   ```
+
+3. **Update pipeline**:
+   ```python
+   # Old
+   scripts = ['ingest_static_data.py', 'ingest_events_tickets.py']
+   
+   # New
+   from v2.core.pipeline import PipelineBuilder
+   pipeline = PipelineBuilder("custom", "Custom pipeline")
+   pipeline.add_step("static_data", "static_data_ingestion")
+   pipeline.add_step_with_dependencies("events_tickets", "events_tickets_ingestion", ["static_data"])
+   ```
+
+## 🛠️ Development
+
+### Adding New Scripts
+
+**V1 System:**
+1. Create script in `v1/` directory
+2. Add to `v1/run_ingest.py` if needed
+3. Update documentation
+
+**V2 System:**
+1. Create script in `v2/` directory
+2. Add to pipeline configuration
+3. Update core modules if needed
+4. Add tests
+
+### Shared Components
+
+- **`models/`**: Data models and database schemas
+- **`sql/`**: SQL queries and scripts
+- **`utils/`**: Utility functions and processors
+- **`scripts/`**: Shared scripts
+
+## 📚 Documentation
+
+- **Main README**: This file
+- **V2 Documentation**: `v2/README_V2.md`
+- **Architecture**: `v2/ARCHITECTURE.md`
+- **Examples**: `v2/examples/`
+
+## 🤝 Contributing
 
 1. Fork the repository
 2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
+3. Make your changes
+4. Add tests
+5. Submit a pull request
 
-## License
+## 🆘 Support
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+For issues and questions:
+
+1. Check the logs for error details
+2. Review the documentation
+3. Test with minimal configuration
+4. Create an issue with details
+
+## 🔮 Roadmap
+
+### V2 Enhancements
+- Web UI for pipeline configuration
+- Real-time monitoring dashboard
+- Advanced scheduling
+- Auto-scaling capabilities
+- Enhanced error recovery
+
+### V1 Maintenance
+- Bug fixes
+- Security updates
+- Compatibility improvements

@@ -1,7 +1,7 @@
 FROM python:3.10-slim
 
-# Install cron and required packages
-RUN apt-get update && apt-get -y install cron
+# Install cron and required packages including network debugging tools
+RUN apt-get update && apt-get -y install cron curl dnsutils iputils-ping netcat-openbsd
 
 # Set working directory
 WORKDIR /app
@@ -23,7 +23,8 @@ RUN mkdir -p logs
 RUN echo '#!/bin/bash\n\
 source /app/.env\n\
 cd /app\n\
-python scripts/run_ingest.py >> /app/logs/cron.log 2>&1' > /app/run_cron.sh
+echo "=== Starting Ingest Process ===" >> /app/logs/cron.log\n\
+python v1/run_ingest.py >> /app/logs/cron.log 2>&1' > /app/run_cron.sh
 
 # Make the script executable
 RUN chmod +x /app/run_cron.sh
@@ -42,6 +43,13 @@ RUN touch /app/logs/cron.log
 
 # Set Python path in environment
 ENV PYTHONPATH=/app
+
+# Set network-related environment variables for better connectivity
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV REQUESTS_CA_BUNDLE=""
+ENV CURL_CA_BUNDLE=""
+ENV SSL_VERIFY=false
 
 # Start cron in foreground
 CMD printenv > /app/.env && cron -f 
