@@ -72,12 +72,12 @@ def main():
         
         logger.info(f"Using Python at: {PYTHON_PATH}")
         
-        # Define the execution order
+        # Define the execution order (scripts are now in the v1/ directory)
         scripts = [
-            'ingest_static_data.py',  # Run static data ingest first
-            'ingest_events_tickets.py',  # Run main ingest
-            # 'ingest_age_groups.py',   # Run age group ingest -- Commented out for manual ingestion
-            'ticket_analytics.py',
+            'v1/ingest_static_data.py',  # Run static data ingest first
+            'v1/ingest_events_tickets.py',  # Run main ingest
+            # 'v1/ingest_age_groups.py',   # Run age group ingest -- Commented out for manual ingestion
+            'v1/ticket_analytics.py',
         ]
         
         # Run scripts in sequence, stop if any fails

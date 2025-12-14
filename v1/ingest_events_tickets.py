@@ -1,3 +1,11 @@
+import sys
+import os
+from pathlib import Path
+
+# Add project root to Python path for shared components
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
 import logging
 import requests
 import asyncio
@@ -1018,19 +1026,43 @@ def ingest_data(token: str, event_id: str, schema: str, region: str, skip_fetch:
             logger.error("Failed to get events from API")
             return
             
+        # Log available events for debugging
+        event_rows = events.get("rows", [])
+        logger.info(f"Retrieved {len(event_rows)} events from API")
+        
+        # Log all available event IDs and names
+        if event_rows:
+            logger.info("Available events from API:")
+            for idx, event_data in enumerate(event_rows, 1):
+                event_id_available = event_data.get("_id", "N/A")
+                event_name = event_data.get("name", "N/A")
+                event_start = event_data.get("start", "N/A")
+                logger.info(f"  [{idx}] ID: {event_id_available}, Name: {event_name}, Start: {event_start}")
+        else:
+            logger.warning("No events returned from API (empty 'rows' array)")
+            
         found_event_data = None
         
         with TransactionManager(db_manager) as session:
             verify_tables(session, schema)
-            for event_data in events["rows"]:
+            for event_data in event_rows:
                 if event_data.get("_id") == event_id:
                     event = create_event(session, event_data, schema)
                     found_event_data = event_data
-                    logger.info(f"Found matching event: {event_id}")
+                    logger.info(f"Found matching event: {event_id} (Name: {event_data.get('name', 'N/A')})")
                     break
 
         if not found_event_data:
-            logger.error(f"Event {event_id} not found")
+            logger.error(f"Event {event_id} not found in API response")
+            logger.error(f"Looking for event ID: {event_id}")
+            logger.error(f"Total events available: {len(event_rows)}")
+            if event_rows:
+                available_ids = [event_data.get("_id") for event_data in event_rows]
+                logger.error(f"Available event IDs: {', '.join(available_ids)}")
+                # Check if there's a similar ID (maybe a typo or partial match)
+                similar_ids = [eid for eid in available_ids if event_id[:8] in eid or eid[:8] in event_id]
+                if similar_ids:
+                    logger.warning(f"Similar event IDs found (possible typo?): {', '.join(similar_ids)}")
             return
 
         # Process tickets with optimized batching

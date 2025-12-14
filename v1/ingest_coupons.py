@@ -66,12 +66,33 @@ class VivenuCouponAPI:
         logger.debug(f"Coupon API initialized with URL: {self.base_url}")
         
     async def _ensure_client(self):
-        """Ensure httpx client exists"""
+        """Ensure httpx client exists with improved connection settings"""
         if self._client is None:
+            # Configure httpx with retry and connection settings for Docker environments
+            limits = httpx.Limits(
+                max_keepalive_connections=20,
+                max_connections=100,
+                keepalive_expiry=30.0
+            )
+            
+            # Create timeout configuration with separate connect and read timeouts
+            timeout = httpx.Timeout(
+                connect=10.0,  # Connection timeout
+                read=30.0,     # Read timeout
+                write=10.0,    # Write timeout
+                pool=5.0       # Pool timeout
+            )
+            
             self._client = httpx.AsyncClient(
                 headers=self.headers,
-                verify=False,
-                timeout=30.0
+                verify=False,  # Disable SSL verification for container environments
+                timeout=timeout,
+                limits=limits,
+                # Add retry transport for automatic retries
+                transport=httpx.AsyncHTTPTransport(
+                    retries=3,  # Retry failed requests up to 3 times
+                    http2=False  # Disable HTTP/2 for better Docker compatibility
+                )
             )
         return self._client
         
@@ -461,8 +482,30 @@ class BatchProcessor:
 
     async def _process_single_coupon_batch(self, token, base_url, headers, db_manager, event_id, schema, tracked_codes, batch_num, skip, total_batches, batch_size):
         """Process a single batch with a fresh httpx client"""
-        # Create a new httpx client for this batch only
-        async with httpx.AsyncClient(headers=headers, verify=False, timeout=30.0) as client:
+        # Create a new httpx client for this batch only with improved settings
+        limits = httpx.Limits(
+            max_keepalive_connections=20,
+            max_connections=100,
+            keepalive_expiry=30.0
+        )
+        
+        timeout = httpx.Timeout(
+            connect=10.0,
+            read=30.0,
+            write=10.0,
+            pool=5.0
+        )
+        
+        async with httpx.AsyncClient(
+            headers=headers, 
+            verify=False, 
+            timeout=timeout,
+            limits=limits,
+            transport=httpx.AsyncHTTPTransport(
+                retries=3,
+                http2=False
+            )
+        ) as client:
             try:
                 # Fetch the coupons
                 url = f"{base_url}/coupon/rich"

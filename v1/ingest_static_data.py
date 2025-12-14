@@ -1,4 +1,11 @@
+import sys
 import os
+from pathlib import Path
+
+# Add project root to Python path for shared components
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
 from dotenv import load_dotenv
 import logging
 from datetime import datetime
@@ -6,7 +13,6 @@ from sqlalchemy import create_engine, text
 from typing import Dict, List, Tuple
 import json
 import glob
-from pathlib import Path
 import pandas as pd
 
 # Create logs directory if it doesn't exist

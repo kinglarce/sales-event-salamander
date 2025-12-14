@@ -1,0 +1,25 @@
+name: "minimal_ingestion"
+description: "Minimal ingestion pipeline with only essential steps"
+parallel_execution: false
+stop_on_failure: true
+retry_failed_steps: true
+max_retries: 3
+
+steps:
+  - name: "static_data_ingestion"
+    function: "static_data_ingestion"
+    enabled: true
+    retry_count: 0
+    max_retries: 3
+    timeout: 300.0
+    depends_on: []
+    condition: null
+
+  - name: "events_tickets_ingestion"
+    function: "events_tickets_ingestion"
+    enabled: true
+    retry_count: 0
+    max_retries: 3
+    timeout: 1800.0
+    depends_on: ["static_data_ingestion"]
+    condition: null
