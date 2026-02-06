@@ -38,7 +38,8 @@ ORDER BY
         WHEN 'FRIDAY' THEN 2
         WHEN 'SATURDAY' THEN 3
         WHEN 'SUNDAY' THEN 4
-        WHEN '2 DAYS' THEN 5
-        WHEN '3 DAYS' THEN 6
-        ELSE 7
+        WHEN 'MONDAY' THEN 5
+        WHEN '2 DAYS' THEN 6
+        WHEN '3 DAYS' THEN 7
+        ELSE 8
     END; 
