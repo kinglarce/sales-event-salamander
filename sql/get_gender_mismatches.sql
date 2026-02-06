@@ -8,6 +8,7 @@ WITH gender_mismatch_base AS (
             WHEN UPPER(t.ticket_name) LIKE '%FRIDAY%' THEN 'FRIDAY'
             WHEN UPPER(t.ticket_name) LIKE '%SATURDAY%' THEN 'SATURDAY'
             WHEN UPPER(t.ticket_name) LIKE '%SUNDAY%' THEN 'SUNDAY'
+            WHEN UPPER(t.ticket_name) LIKE '%MONDAY%' THEN 'MONDAY'
             ELSE 'NONE'
         END as event_day
     FROM {SCHEMA}.tickets t
@@ -31,6 +32,7 @@ gender_mismatch_details AS (
             WHEN UPPER(t.ticket_name) LIKE '%FRIDAY%' THEN 'FRIDAY'
             WHEN UPPER(t.ticket_name) LIKE '%SATURDAY%' THEN 'SATURDAY'
             WHEN UPPER(t.ticket_name) LIKE '%SUNDAY%' THEN 'SUNDAY'
+            WHEN UPPER(t.ticket_name) LIKE '%MONDAY%' THEN 'MONDAY'
             ELSE 'NONE'
         END as event_day
     FROM {SCHEMA}.tickets t
@@ -39,6 +41,7 @@ gender_mismatch_details AS (
             WHEN UPPER(t.ticket_name) LIKE '%FRIDAY%' THEN 'FRIDAY'
             WHEN UPPER(t.ticket_name) LIKE '%SATURDAY%' THEN 'SATURDAY'
             WHEN UPPER(t.ticket_name) LIKE '%SUNDAY%' THEN 'SUNDAY'
+            WHEN UPPER(t.ticket_name) LIKE '%MONDAY%' THEN 'MONDAY'
             ELSE 'NONE'
         END = g.event_day
 )
@@ -62,6 +65,7 @@ ORDER BY
         WHEN b.event_day = 'FRIDAY' THEN 2
         WHEN b.event_day = 'SATURDAY' THEN 3
         WHEN b.event_day = 'SUNDAY' THEN 4
-        ELSE 5
+        WHEN b.event_day = 'MONDAY' THEN 5
+        ELSE 6
     END,
     b.ticket_name

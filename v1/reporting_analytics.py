@@ -28,6 +28,21 @@ if os.getenv('ENABLE_FILE_LOGGING', 'true').strip().lower() in ('true', '1'):
 
 logger = logging.getLogger(__name__)
 
+def _get_day_sort_key(text: str) -> Tuple[int, str]:
+    """Get sort key for day ordering: THURSDAY, FRIDAY, SATURDAY, SUNDAY, MONDAY, then others"""
+    text_upper = text.upper()
+    day_order = {
+        'THURSDAY': 0,
+        'FRIDAY': 1,
+        'SATURDAY': 2,
+        'SUNDAY': 3,
+        'MONDAY': 4
+    }
+    for day, order in day_order.items():
+        if day in text_upper:
+            return (order, text)
+    return (999, text)  # Other items come last
+
 class DatabaseManager:
     """Handles database connections and queries"""
     
@@ -366,13 +381,13 @@ class SlackService:
             
             # Order tickets by category and then by day
             singles = sorted(df[df['ticket_category'] == 'single']['display_ticket_group'].unique(), 
-                            key=lambda x: ('SATURDAY' in x, 'SUNDAY' in x, 'FRIDAY' not in x and 'SATURDAY' not in x and 'SUNDAY' not in x, x))
+                            key=_get_day_sort_key)
             doubles = sorted(df[df['ticket_category'] == 'double']['display_ticket_group'].unique(),
-                            key=lambda x: ('SATURDAY' in x, 'SUNDAY' in x, 'FRIDAY' not in x and 'SATURDAY' not in x and 'SUNDAY' not in x, x))
+                            key=_get_day_sort_key)
             # Group relays and corporate relays together but keep the ordering
             relays = sorted(df[(df['ticket_category'] == 'relay') | 
                               (df['ticket_category'] == 'corporate_relay')]['display_ticket_group'].unique(),
-                           key=lambda x: ('SATURDAY' in x, 'SUNDAY' in x, 'FRIDAY' not in x and 'SATURDAY' not in x and 'SUNDAY' not in x, x))
+                           key=_get_day_sort_key)
 
             blocks = []
             icon_mapping = self._load_icon_mapping()
@@ -457,10 +472,10 @@ class SlackService:
         # Create combined divisions (without day separation)
         combined_df = self._create_combined_divisions(df)
         
-        # Order display groups by day (Friday, Saturday, Sunday)
+        # Order display groups by day (Thursday, Friday, Saturday, Sunday, Monday)
         display_groups = sorted(
             df['display_ticket_group'].unique(),
-            key=lambda x: ('SATURDAY' in x, 'SUNDAY' in x, 'FRIDAY' not in x and 'SATURDAY' not in x and 'SUNDAY' not in x, x)
+            key=_get_day_sort_key
         )
         
         for i in range(0, len(display_groups), 2):
@@ -694,10 +709,10 @@ class ExcelGenerator:
             # Get display name for the category
             category_display = category_display_names.get(category, category.upper())
             
-            # Filter display groups for this category and sort them by day (Friday, Saturday, Sunday)
+            # Filter display groups for this category and sort them by day (Thursday, Friday, Saturday, Sunday, Monday)
             category_display_groups = sorted(
                 df[df['ticket_category'] == category]['display_ticket_group'].unique(),
-                key=lambda x: ('SATURDAY' in x, 'SUNDAY' in x, 'FRIDAY' not in x and 'SATURDAY' not in x and 'SUNDAY' not in x, x)
+                key=_get_day_sort_key
             )
             
             if not category_display_groups:
@@ -1586,7 +1601,7 @@ class ExcelGenerator:
         # Define category order
         category_order = ['single', 'double', 'relay', 'corporate_relay']
         # Define day order
-        day_order = {'FRIDAY': 0, 'SATURDAY': 1, 'SUNDAY': 2, 'NONE': 3}
+        day_order = {'THURSDAY': -1, 'FRIDAY': 0, 'SATURDAY': 1, 'SUNDAY': 2, 'MONDAY': 3, 'NONE': 4}
         
         # Sort team counts by category and then by event day
         sorted_team_counts = sorted(
