@@ -95,7 +95,6 @@ class TicketDataProvider:
                 sql = file.read().format(SCHEMA=self.schema)
             results = self.db.execute_query(sql, {"event_id": self.event_id})
             summary = {row[0]: row[1] for row in results}
-            summary['Total_athletes'] = f"{summary['Total_athletes']} / {capacity_configs.get('price_trigger', 0)}"
             return summary
             
         except Exception as e:
@@ -406,6 +405,38 @@ class SlackReporter:
         
         table += "```"
         return table
+
+    def format_summary_table_with_capacity(
+        self,
+        summary_data: List[Tuple[str, Any]],
+        capacity_configs: Dict[str, str],
+    ) -> str:
+        """Format summary as a 4-column table: Ticket Group | No. Pax | Max Cap | Oversell Cap.
+        Max Cap and Oversell Cap are shown only on the Total_athletes row."""
+        if not summary_data:
+            return ""
+        group_width = 18  # Narrow column for Slack readability
+        num_width = 10
+        header_group = "Ticket Group"[:group_width].ljust(group_width)
+
+        def truncate(s: str, w: int) -> str:
+            s = str(s)
+            return (s[: w - 1] + "…") if len(s) > w else s
+
+        table = "```\n"
+        table += f"{header_group} | {'No. Pax':>{num_width}} | {'Max Cap':>{num_width}} | {'Oversell':>{num_width}}\n"
+        table += f"{'-' * group_width} | {'-' * num_width} | {'-' * num_width} | {'-' * num_width}\n"
+        max_cap = capacity_configs.get("max_capacity", "") or ""
+        oversell_cap = capacity_configs.get("overselling_capacity", "") or ""
+        for group, count in summary_data:
+            formatted_group = " ".join(word.capitalize() for word in str(group).split("_"))
+            cell = truncate(formatted_group, group_width).ljust(group_width)
+            if group == "Total_athletes":
+                table += f"{cell} | {count:>{num_width}} | {max_cap:>{num_width}} | {oversell_cap:>{num_width}}\n"
+            else:
+                table += f"{cell} | {count:>{num_width}} | {'':>{num_width}} | {'':>{num_width}}\n"
+        table += "```"
+        return table
     
     def format_shop_category_table(self, shop_data: List[Dict[str, Any]]) -> str:
         """Format shop category data into a Slack-friendly table"""
@@ -497,15 +528,16 @@ class SlackReporter:
                             f"_Updated: {current_time_hk.strftime('%Y-%m-%d %H:%M:%S')} HKT_\n"
                             f"*Price Tier:* {capacity_configs.get('price_tier', 'N/A')}\n"
                             f"_(Max Capacity: {capacity_configs.get('max_capacity', 'N/A')}, "
+                            f"Overselling: {capacity_configs.get('overselling_capacity', 'N/A')}, "
                             f"Start Wave: {capacity_configs.get('start_wave', 'N/A')})_"
                         )
                     }
                 }
             ]
             
-            # Format main summary table
+            # Format main summary table (4 columns: Ticket Group | No. Pax | Max Cap | Oversell Cap)
             summary_data = [(k, v) for k, v in current_summary.items()]
-            summary_table = self.format_table(summary_data)
+            summary_table = self.format_summary_table_with_capacity(summary_data, capacity_configs)
             blocks.append({
                 "type": "section",
                 "text": {
