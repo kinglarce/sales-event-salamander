@@ -143,33 +143,71 @@ class TicketDataProvider:
             logger.error(f"Error getting historical data: {e}")
             return pd.DataFrame()
     
-    def get_detailed_breakdown(self) -> List[Dict[str, Any]]:
-        """Get detailed breakdown using the custom SQL query"""
+    def get_detailed_breakdown(self) -> Tuple[List[Dict[str, Any]], Dict[str, List[Dict[str, Any]]]]:
+        """Get detailed breakdown (aggregated), plus per-prefix breakdowns (CHARITY, KLOOK, or any future prefix).
+        Returns (detailed_breakdown, prefix_breakdowns) where prefix_breakdowns is e.g. {"CHARITY": [...], "KLOOK": [...]}."""
         try:
-            # Determine which SQL file to use
             sql_summary_detailed_by_day = 'sql/get_detailed_summary_with_day_report.sql'
             sql_summary = 'sql/get_detailed_summary_report.sql'
-            is_config_breakdown_exist =  os.getenv(f'EVENT_CONFIGS__{self.region}__summary_breakdown_day', 'false').strip().lower() in ('true', '1')
-            is_config_exclude_adaptive_sunday =  os.getenv(f'EVENT_CONFIGS__{self.region}__exclude_adaptive_sunday', 'false').strip().lower() in ('true', '1')
+            is_config_breakdown_exist = os.getenv(f'EVENT_CONFIGS__{self.region}__summary_breakdown_day', 'false').strip().lower() in ('true', '1')
+            is_config_exclude_adaptive_sunday = os.getenv(f'EVENT_CONFIGS__{self.region}__exclude_adaptive_sunday', 'false').strip().lower() in ('true', '1')
             sql_file = sql_summary_detailed_by_day if is_config_breakdown_exist else sql_summary
-            
-            # Read and format SQL file
+
             with open(sql_file, 'r') as file:
                 sql = file.read().format(SCHEMA=self.schema, EXCLUDE_ADAPTIVE_SUNDAY=is_config_exclude_adaptive_sunday)
 
-            # Execute query
             results = self.db.execute_query(sql)
+            if not results:
+                return [], {}
 
-            # Process results into a list of dictionaries
-            return [{
-                "ticket_group": row[0], 
+            # Day report returns: display_category, total, capacity, prefix, sort_order
+            # Non-day report returns: display_category, total, capacity, formatted_total, percentage_total
+            if is_config_breakdown_exist:
+                from collections import defaultdict
+                by_display: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"total": 0, "capacity": None, "sort_order": None})
+                prefix_rows: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+
+                for row in results:
+                    display_category, total, capacity, prefix, sort_order = row[0], row[1], row[2], row[3], row[4]
+                    by_display[display_category]["ticket_group"] = display_category
+                    by_display[display_category]["total"] += total
+                    by_display[display_category]["capacity"] = capacity
+                    by_display[display_category]["sort_order"] = sort_order
+
+                    if prefix:
+                        prefix_rows[prefix].append({"ticket_group": display_category, "total": total, "sort_order": sort_order})
+
+                detailed = []
+                for display_cat, data in sorted(by_display.items(), key=lambda x: (x[1]["sort_order"] or 999999, x[0])):
+                    cap = data["capacity"]
+                    tot = data["total"]
+                    if cap is not None and cap > 0:
+                        formatted = f"{tot} / {cap}"
+                        pct = round((tot / cap) * 100, 2)
+                        percentage = f"{pct}%"
+                    else:
+                        formatted = str(tot)
+                        percentage = ""
+                    detailed.append({"ticket_group": data["ticket_group"], "total": formatted, "percentage": percentage})
+
+                # Sort each prefix's rows by sort_order and flatten to {ticket_group, total}
+                prefix_breakdowns: Dict[str, List[Dict[str, Any]]] = {}
+                for name, rows in prefix_rows.items():
+                    rows.sort(key=lambda x: (x["sort_order"] or 999999, x["ticket_group"]))
+                    prefix_breakdowns[name] = [{"ticket_group": r["ticket_group"], "total": r["total"]} for r in rows]
+                return detailed, prefix_breakdowns
+
+            # Non-day report or legacy format
+            detailed = [{
+                "ticket_group": row[0],
                 "total": row[3],
                 "percentage": f"{row[4]}%" if row[4] is not None else ""
             } for row in results]
+            return detailed, {}
 
         except Exception as e:
             logger.error(f"Error getting detailed breakdown: {e}")
-        return []
+        return [], {}
         
     def get_shop_category_breakdown(self) -> Dict[str, List[Dict[str, Any]]]:
         """Get breakdown of tickets by shop_category"""
@@ -437,7 +475,19 @@ class SlackReporter:
                 table += f"{cell} | {count:>{num_width}} | {'':>{num_width}} | {'':>{num_width}}\n"
         table += "```"
         return table
-    
+
+    def format_prefix_breakdown_table(self, items: List[Dict[str, Any]], group_width: int = 50, num_width: int = 12) -> str:
+        """Format per-prefix breakdown as 2-column table: Ticket Group | No. Pax (no % column)."""
+        if not items:
+            return ""
+        table = "```\n"
+        table += f"{'Ticket Group':<{group_width}} | {'No. Pax':>{num_width}}\n"
+        table += f"{'-' * group_width} | {'-' * num_width}\n"
+        for item in items:
+            table += f"{item['ticket_group']:<{group_width}} | {item['total']:>{num_width}}\n"
+        table += "```"
+        return table
+
     def format_shop_category_table(self, shop_data: List[Dict[str, Any]]) -> str:
         """Format shop category data into a Slack-friendly table"""
         if not shop_data:
@@ -491,11 +541,12 @@ class SlackReporter:
         table += "```"
         return table
     
-    def send_report(self, 
-                   current_summary: Dict[str, int], 
+    def send_report(self,
+                   current_summary: Dict[str, int],
                    detailed_breakdown: List[Dict[str, Any]],
-                   capacity_configs: Dict[str, str],
-                   growth_data: Optional[Dict] = None, 
+                   prefix_breakdowns: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+                   capacity_configs: Dict[str, str] = None,
+                   growth_data: Optional[Dict] = None,
                    projections: Optional[pd.DataFrame] = None,
                    projection_minutes: int = 3,
                    shop_category_breakdown: Optional[Dict[str, List[Dict[str, Any]]]] = None,
@@ -504,7 +555,8 @@ class SlackReporter:
         if not self.slack_client:
             logger.warning("Slack client not available. Report not sent.")
             return False
-            
+        capacity_configs = capacity_configs or {}
+
         try:
             # Create message blocks with Hong Kong timezone
             hk_tz = pytz.timezone('Asia/Hong_Kong')
@@ -586,7 +638,26 @@ class SlackReporter:
                         "text": table_text
                     }
                 })
-            
+
+            # Per-prefix ticket breakdowns (CHARITY, KLOOK, or any future prefix); 2 cols: Ticket Group | No. Pax
+            # Order: TICKET_PREFIX_ORDER env (e.g. "CHARITY,KLOOK,PARTNER") then alphabetical for any others
+            prefix_breakdowns = prefix_breakdowns or {}
+            order_env = os.getenv("TICKET_PREFIX_ORDER", "").strip().upper()
+            prefix_order = [p.strip() for p in order_env.split(",") if p.strip()] if order_env else []
+            for prefix_name in prefix_order + sorted(k for k in prefix_breakdowns if k not in prefix_order):
+                items = prefix_breakdowns.get(prefix_name)
+                if not items:
+                    continue
+                blocks.append({"type": "divider"})
+                blocks.append({
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"*{prefix_name} Ticket Breakdown:*"}
+                })
+                blocks.append({
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": self.format_prefix_breakdown_table(items)}
+                })
+
             # Add shop category breakdown if available
             if shop_category_breakdown:
                 # Sort categories - PARTNERACCESS first, then HTCACCESS and other variants
@@ -807,9 +878,9 @@ class TicketAnalytics:
                 projection_df = self.analyzer.project_future_sales(historical_df, self.projection_minutes)
                 logger.info(f"Projection data calculated for {self.projection_minutes} minutes")
             
-            # Get detailed breakdown
-            detailed_breakdown = self.data_provider.get_detailed_breakdown()
-            logger.info(f"Detailed breakdown: {len(detailed_breakdown)} entries")
+            # Get detailed breakdown (main + per-prefix breakdowns)
+            detailed_breakdown, prefix_breakdowns = self.data_provider.get_detailed_breakdown()
+            logger.info(f"Detailed breakdown: {len(detailed_breakdown)} entries; prefixes: {list(prefix_breakdowns.keys())}")
             
             # Get shop category breakdown
             shop_category_breakdown = self.data_provider.get_shop_category_breakdown()
@@ -820,6 +891,7 @@ class TicketAnalytics:
             success = self.reporter.send_report(
                 current_summary=current_summary,
                 detailed_breakdown=detailed_breakdown,
+                prefix_breakdowns=prefix_breakdowns,
                 capacity_configs=capacity_configs,
                 growth_data=growth_data,
                 projections=projection_df,
