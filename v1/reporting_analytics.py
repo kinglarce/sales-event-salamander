@@ -29,14 +29,15 @@ if os.getenv('ENABLE_FILE_LOGGING', 'true').strip().lower() in ('true', '1'):
 logger = logging.getLogger(__name__)
 
 def _get_day_sort_key(text: str) -> Tuple[int, str]:
-    """Get sort key for day ordering: THURSDAY, FRIDAY, SATURDAY, SUNDAY, MONDAY, then others"""
+    """Get sort key for day ordering: WEDNESDAY to MONDAY, then others."""
     text_upper = text.upper()
     day_order = {
-        'THURSDAY': 0,
-        'FRIDAY': 1,
-        'SATURDAY': 2,
-        'SUNDAY': 3,
-        'MONDAY': 4
+        'WEDNESDAY': 0,
+        'THURSDAY': 1,
+        'FRIDAY': 2,
+        'SATURDAY': 3,
+        'SUNDAY': 4,
+        'MONDAY': 5
     }
     for day, order in day_order.items():
         if day in text_upper:
@@ -1601,7 +1602,15 @@ class ExcelGenerator:
         # Define category order
         category_order = ['single', 'double', 'relay', 'corporate_relay']
         # Define day order
-        day_order = {'THURSDAY': -1, 'FRIDAY': 0, 'SATURDAY': 1, 'SUNDAY': 2, 'MONDAY': 3, 'NONE': 4}
+        day_order = {
+            'WEDNESDAY': -1,
+            'THURSDAY': 0,
+            'FRIDAY': 1,
+            'SATURDAY': 2,
+            'SUNDAY': 3,
+            'MONDAY': 4,
+            'NONE': 5
+        }
         
         # Sort team counts by category and then by event day
         sorted_team_counts = sorted(

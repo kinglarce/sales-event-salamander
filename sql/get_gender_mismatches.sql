@@ -4,6 +4,7 @@ WITH gender_mismatch_base AS (
         t.gender,
         COUNT(*) as count,
         CASE 
+            WHEN UPPER(t.ticket_name) LIKE '%WEDNESDAY%' THEN 'WEDNESDAY'
             WHEN UPPER(t.ticket_name) LIKE '%THURSDAY%' THEN 'THURSDAY'
             WHEN UPPER(t.ticket_name) LIKE '%FRIDAY%' THEN 'FRIDAY'
             WHEN UPPER(t.ticket_name) LIKE '%SATURDAY%' THEN 'SATURDAY'
@@ -28,6 +29,7 @@ gender_mismatch_details AS (
         t.ticket_type_id,
         t.category_name,
         CASE 
+            WHEN UPPER(t.ticket_name) LIKE '%WEDNESDAY%' THEN 'WEDNESDAY'
             WHEN UPPER(t.ticket_name) LIKE '%THURSDAY%' THEN 'THURSDAY'
             WHEN UPPER(t.ticket_name) LIKE '%FRIDAY%' THEN 'FRIDAY'
             WHEN UPPER(t.ticket_name) LIKE '%SATURDAY%' THEN 'SATURDAY'
@@ -38,6 +40,8 @@ gender_mismatch_details AS (
     FROM {SCHEMA}.tickets t
     JOIN gender_mismatch_base g ON t.ticket_name = g.ticket_name AND t.gender = g.gender AND 
         CASE 
+            WHEN UPPER(t.ticket_name) LIKE '%WEDNESDAY%' THEN 'WEDNESDAY'
+            WHEN UPPER(t.ticket_name) LIKE '%THURSDAY%' THEN 'THURSDAY'
             WHEN UPPER(t.ticket_name) LIKE '%FRIDAY%' THEN 'FRIDAY'
             WHEN UPPER(t.ticket_name) LIKE '%SATURDAY%' THEN 'SATURDAY'
             WHEN UPPER(t.ticket_name) LIKE '%SUNDAY%' THEN 'SUNDAY'
@@ -61,11 +65,12 @@ JOIN gender_mismatch_details d ON b.ticket_name = d.ticket_name AND b.gender = d
 GROUP BY b.ticket_name, b.gender, b.count, b.event_day
 ORDER BY 
     CASE 
-        WHEN b.event_day = 'THURSDAY' THEN 1
-        WHEN b.event_day = 'FRIDAY' THEN 2
-        WHEN b.event_day = 'SATURDAY' THEN 3
-        WHEN b.event_day = 'SUNDAY' THEN 4
-        WHEN b.event_day = 'MONDAY' THEN 5
-        ELSE 6
+        WHEN b.event_day = 'WEDNESDAY' THEN 1
+        WHEN b.event_day = 'THURSDAY' THEN 2
+        WHEN b.event_day = 'FRIDAY' THEN 3
+        WHEN b.event_day = 'SATURDAY' THEN 4
+        WHEN b.event_day = 'SUNDAY' THEN 5
+        WHEN b.event_day = 'MONDAY' THEN 6
+        ELSE 7
     END,
     b.ticket_name
