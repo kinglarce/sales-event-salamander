@@ -18,6 +18,7 @@ from slack_sdk.errors import SlackApiError
 from dotenv import load_dotenv
 from typing import Dict, List, Optional, Any, Tuple
 import pytz
+from utils.event_config import is_only_spectator_report
 
 # Configure logging
 logging.basicConfig(
@@ -931,6 +932,12 @@ def main():
     
     # Run analysis for each event
     for config in configs:
+        if is_only_spectator_report(config["region"]):
+            logger.info(
+                "Skipping ticket analytics for %s (only_spectator_report / only_specator_report enabled)",
+                config["region"],
+            )
+            continue
         logger.info(f"Running analysis for schema: {config['schema']}, event_id: {config['event_id']}")
         analyzer = TicketAnalytics(
             config['schema'], 

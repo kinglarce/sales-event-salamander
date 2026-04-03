@@ -3,7 +3,14 @@ import logging
 import os
 import sys
 from datetime import datetime
+from pathlib import Path
 from dotenv import load_dotenv
+
+_project_root = Path(__file__).resolve().parent.parent
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
+
+from utils.event_config import any_only_spectator_report
 
 # Load environment variables
 load_dotenv()
@@ -71,21 +78,26 @@ def main():
         os.makedirs('logs', exist_ok=True)
         
         logger.info(f"Using Python at: {PYTHON_PATH}")
-        
-        # Define the execution order (scripts are now in the v1/ directory)
-        scripts = [
-            'v1/ingest_static_data.py',  # Run static data ingest first
-            'v1/ingest_events_tickets.py',  # Run main ingest
-            # 'v1/ingest_age_groups.py',   # Run age group ingest -- Commented out for manual ingestion
-            'v1/ticket_analytics.py',
+
+        # Phase 1: fetch + aggregate into DB (must complete before any Slack/reporting)
+        ingest_scripts = [
+            'v1/ingest_static_data.py',
+            'v1/ingest_events_tickets.py',
+            # 'v1/ingest_age_groups.py',  # manual when needed
         ]
-        
-        # Run scripts in sequence, stop if any fails
-        for script in scripts:
+        for script in ingest_scripts:
             if not run_script(script):
-                logger.error(f"Stopping execution due to failure in {script}")
-                break
-            
+                logger.error(f"Stopping: ingest failed at {script}; skipping analytics")
+                return
+
+        # Phase 2: reporting (reads fresh data from DB)
+        if not run_script('v1/ticket_analytics.py'):
+            logger.error("ticket_analytics failed; continuing to spectator if configured")
+
+        if any_only_spectator_report():
+            if not run_script('v1/spectator_analytics.py'):
+                logger.error("spectator_analytics failed")
+
     except Exception as e:
         logger.error(f"Error in main orchestration: {e}")
 

@@ -45,6 +45,9 @@ services:
     networks:
       - vivenu-net
 
+  # Runs v1/run_ingest.py on schedule; when EVENT_CONFIGS__{region}__only_specator_report
+  # or __only_spectator_report is true, skips full ticket Slack for that region and runs
+  # v1/spectator_analytics.py after a successful ingest pipeline.
   cron:
     build:
       context: .

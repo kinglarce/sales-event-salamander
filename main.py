@@ -31,6 +31,8 @@ Examples:
   
   # Run v1 with specific script
   python main.py --version v1 --script ingest_events_tickets
+  python main.py --version v1 --script spectator_analytics
+  python main.py --version v1 --script spectator_analytics.py
   
   # Docker usage
   docker exec -it vivenu-app python main.py --version v1
@@ -75,8 +77,9 @@ def run_v1(args):
     print("🚀 Starting Vivenu Events Ticket Scrapper v1...")
     
     if args.script:
-        # Run specific script
-        script_path = f"v1/{args.script}.py"
+        # Run specific script (accept "foo" or "foo.py")
+        script_name = args.script.removesuffix(".py") if args.script.endswith(".py") else args.script
+        script_path = f"v1/{script_name}.py"
         if not os.path.exists(script_path):
             print(f"❌ Script not found: {script_path}")
             sys.exit(1)

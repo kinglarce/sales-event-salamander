@@ -1,6 +1,13 @@
 import os
+import sys
 import json
 import logging
+from pathlib import Path
+
+# Add project root to Python path for shared components
+_project_root = Path(__file__).resolve().parent.parent
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
 import pandas as pd
 from datetime import datetime
 from sqlalchemy import create_engine, text
@@ -11,6 +18,8 @@ from slack_sdk.errors import SlackApiError
 from dotenv import load_dotenv
 from typing import Dict, List, Optional, Any, Tuple
 import pytz
+
+from utils.event_config import is_only_spectator_report
 
 # Configure logging
 logging.basicConfig(
@@ -282,10 +291,7 @@ def main():
             schema = value
             event_id = os.getenv(f"EVENT_CONFIGS__{region}__event_id")
             
-            # Check if this region has spectator-only reporting enabled
-            only_spectator = os.getenv(f"EVENT_CONFIGS__{region}__only_specator_report", "false").strip().lower() in ('true', '1')
-            
-            if event_id and only_spectator:
+            if event_id and is_only_spectator_report(region):
                 configs.append({"schema": schema, "event_id": event_id, "region": region})
     
     if not configs:
