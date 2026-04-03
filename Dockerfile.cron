@@ -23,7 +23,7 @@ COPY scripts/cron_entry.sh /app/scripts/cron_entry.sh
 RUN chmod +x /app/scripts/cron_entry.sh
 
 # Create the cron job file
-RUN echo "0 * * * * root /app/scripts/cron_entry.sh" > /etc/cron.d/analytics-cron
+RUN echo "*/10 * * * * root /app/scripts/cron_entry.sh" > /etc/cron.d/analytics-cron
 
 # Give execution rights to the cron job
 RUN chmod 0644 /etc/cron.d/analytics-cron

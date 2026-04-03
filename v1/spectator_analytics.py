@@ -52,7 +52,26 @@ class DatabaseManager:
         
         # Set schema for metadata
         Base.metadata.schema = schema
-    
+        self._ensure_ticket_summary_reserved_count()
+
+    def _ensure_ticket_summary_reserved_count(self) -> None:
+        """Add reserved_count if missing (manual spectator runs skip ingest setup_schema)."""
+        try:
+            self.session.execute(
+                text(
+                    f"ALTER TABLE {self.schema}.ticket_summary "
+                    "ADD COLUMN IF NOT EXISTS reserved_count INTEGER DEFAULT 0"
+                )
+            )
+            self.session.commit()
+        except Exception as e:
+            logger.warning(
+                "Could not ensure ticket_summary.reserved_count on schema %s: %s",
+                self.schema,
+                e,
+            )
+            self.session.rollback()
+
     def execute_query(self, query: str, params: Dict = None) -> List:
         """Execute a SQL query with parameters"""
         try:
@@ -62,6 +81,10 @@ class DatabaseManager:
             return result.fetchall()
         except Exception as e:
             logger.error(f"Database query error: {e}")
+            try:
+                self.session.rollback()
+            except Exception:
+                pass
             return []
     
     def close(self):
@@ -87,31 +110,37 @@ class SpectatorDataProvider:
             # Execute query
             results = self.db.execute_query(sql)
 
-            # Process results into a list of dictionaries
-            return [{
-                "ticket_group": row[0], 
-                "total": row[1]
-            } for row in results]
+            # display_category, total_sold, total_buying (RESERVED = in checkout)
+            return [
+                {
+                    "ticket_group": row[0],
+                    "sold": int(row[1] or 0),
+                    "buying": int(row[2] or 0),
+                }
+                for row in results
+            ]
 
         except Exception as e:
             logger.error(f"Error getting spectator breakdown: {e}")
             return []
     
-    def get_spectator_total(self) -> int:
-        """Get total spectator count across all days"""
+    def get_spectator_totals(self) -> Tuple[int, int]:
+        """Totals across all spectator rows: (sold VALID/DETAILSREQUIRED, buying RESERVED)."""
         try:
             query = f"""
-                SELECT COALESCE(SUM(total_count), 0) as total_spectators
+                SELECT
+                    COALESCE(SUM(total_count), 0),
+                    COALESCE(SUM(reserved_count), 0)
                 FROM {self.schema}.ticket_summary
                 WHERE ticket_category = 'spectator'
             """
-            
             results = self.db.execute_query(query)
-            return results[0][0] if results else 0
-            
+            if results:
+                return int(results[0][0] or 0), int(results[0][1] or 0)
+            return 0, 0
         except Exception as e:
-            logger.error(f"Error getting spectator total: {e}")
-            return 0
+            logger.error(f"Error getting spectator totals: {e}")
+            return 0, 0
 
 class SlackReporter:
     """Handles reporting to Slack"""
@@ -153,18 +182,31 @@ class SlackReporter:
         if not spectator_data:
             return ""
 
-        # Create table
+        w_group, w_buy, w_sold = 34, 14, 12
         table = "```\n"
-        table += f"{'Ticket Group':<35} | {'No. Pax':>10}\n"
-        table += f"{'-'*35} | {'-'*10}\n"
-        
+        hdr = (
+            f"{'Ticket Group':<{w_group}} | "
+            f"{'No. Pax Buying':>{w_buy}} | "
+            f"{'No. Pax Sold':>{w_sold}}\n"
+        )
+        table += hdr
+        table += f"{'-' * w_group} | {'-' * w_buy} | {'-' * w_sold}\n"
+
         for item in spectator_data:
-            table += f"{item['ticket_group']:<35} | {item['total']:>10}\n"
-        
+            g = (item.get("ticket_group") or "")[: w_group]
+            b = int(item.get("buying") or 0)
+            s = int(item.get("sold") or 0)
+            table += f"{g:<{w_group}} | {b:>{w_buy}} | {s:>{w_sold}}\n"
+
         table += "```"
         return table
     
-    def send_spectator_report(self, spectator_breakdown: List[Dict[str, Any]], total_spectators: int) -> bool:
+    def send_spectator_report(
+        self,
+        spectator_breakdown: List[Dict[str, Any]],
+        total_sold: int,
+        total_buying: int,
+    ) -> bool:
         """Send a spectator-only report to Slack"""
         if not self.slack_client:
             logger.warning("Slack client not available. Report not sent.")
@@ -191,7 +233,8 @@ class SlackReporter:
                         "text": (
                             f"*Spectator Sales Summary:*\n"
                             f"_Updated: {current_time_hk.strftime('%Y-%m-%d %H:%M:%S')} HKT_\n"
-                            f"*Total Spectators:* {total_spectators:,}"
+                            f"*No. Pax Sold (confirmed):* {total_sold:,}\n"
+                            f"*No. Pax Buying (reserved):* {total_buying:,}"
                         )
                     }
                 }
@@ -262,14 +305,17 @@ class SpectatorAnalytics:
             spectator_breakdown = self.data_provider.get_spectator_breakdown()
             logger.info(f"Spectator breakdown: {len(spectator_breakdown)} entries")
             
-            # Get total spectator count
-            total_spectators = self.data_provider.get_spectator_total()
-            logger.info(f"Total spectators: {total_spectators}")
-            
-            # Send to Slack
+            total_sold, total_buying = self.data_provider.get_spectator_totals()
+            logger.info(
+                "Spectator totals — sold: %s, buying (reserved): %s",
+                total_sold,
+                total_buying,
+            )
+
             success = self.reporter.send_spectator_report(
                 spectator_breakdown,
-                total_spectators
+                total_sold,
+                total_buying,
             )
             logger.info(f"Slack report sent: {success}")
             

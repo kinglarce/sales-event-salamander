@@ -75,6 +75,7 @@ class TicketSummary(Base):
     ticket_category = Column(String)
     ticket_event_day = Column(String)
     total_count = Column(Integer, default=0)
+    reserved_count = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

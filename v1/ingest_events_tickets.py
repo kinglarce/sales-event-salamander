@@ -13,7 +13,7 @@ import httpx  # Import httpx library
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy import create_engine, text, func, inspect
+from sqlalchemy import create_engine, text, func, inspect, case
 from models.database import Base, Event, Ticket, TicketSummary, SummaryReport
 import time
 from math import ceil
@@ -26,6 +26,7 @@ import re
 from utils.under_shop_processor import UnderShopProcessor, update_under_shop_summary 
 from utils.event_processor import determine_ticket_group, determine_ticket_event_day, TicketCategory, TicketEventDay
 from utils.addon_processor import update_addon_summary, AddonProcessor
+from utils.event_config import is_only_spectator_report
 
 # Create logs directory if it doesn't exist
 if not os.path.exists('logs'):
@@ -90,9 +91,9 @@ class VivenuAPI:
         response.raise_for_status()
         return response.json()
 
-    def get_tickets(self, skip: int = 0, limit: int = 1000):
+    def get_tickets(self, skip: int = 0, limit: int = 1000, status: str = "VALID,DETAILSREQUIRED"):
         params = {
-            "status": "VALID,DETAILSREQUIRED",
+            "status": status,
             "skip": skip,
             "top": limit
         }
@@ -199,13 +200,13 @@ class VivenuHttpxAPI:
                     logger.error(f"Httpx request failed after {max_retries} attempts: {str(e)}")
                     raise
             
-    async def _get_tickets_async(self, skip: int = 0, limit: int = 1000):
+    async def _get_tickets_async(self, skip: int = 0, limit: int = 1000, status: str = "VALID,DETAILSREQUIRED"):
         """Async implementation of get_tickets using httpx"""
         client = await self._ensure_client()
         url = f"{self.base_url}/tickets"
         
         params = {
-            "status": "VALID,DETAILSREQUIRED",
+            "status": status,
             "skip": skip,
             "top": limit
         }
@@ -255,17 +256,17 @@ class VivenuHttpxAPI:
                 return loop.run_until_complete(self._get_events_async())
             raise
 
-    def get_tickets(self, skip: int = 0, limit: int = 1000):
+    def get_tickets(self, skip: int = 0, limit: int = 1000, status: str = "VALID,DETAILSREQUIRED"):
         """Synchronous wrapper for the async method"""
         loop = self._get_or_create_loop()
         try:
-            return loop.run_until_complete(self._get_tickets_async(skip, limit))
+            return loop.run_until_complete(self._get_tickets_async(skip, limit, status))
         except RuntimeError as e:
             if str(e) == "Event loop is closed":
                 # Create a new loop and try again
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-                return loop.run_until_complete(self._get_tickets_async(skip, limit))
+                return loop.run_until_complete(self._get_tickets_async(skip, limit, status))
             raise
         
     async def close(self):
@@ -333,6 +334,14 @@ class DatabaseManager:
         # Create tables
         Base.metadata.schema = self.schema
         Base.metadata.create_all(self.engine)
+        with self.engine.connect() as conn:
+            conn.execute(
+                text(
+                    f"ALTER TABLE {self.schema}.ticket_summary "
+                    "ADD COLUMN IF NOT EXISTS reserved_count INTEGER DEFAULT 0"
+                )
+            )
+            conn.commit()
         logger.info(f"Successfully set up schema and tables for {self.schema}")
 
 class TransactionManager:
@@ -436,18 +445,23 @@ def update_ticket_summary(session, schema: str, event_id: str):
         # Create a lookup dictionary for ticket names using ticket_type_id
         ticket_name_map = {ticket.get('id'): ticket.get('name') for ticket in event.tickets}
         
-        # Get ticket counts grouped by type and category
+        sold_case = case(
+            (func.upper(Ticket.status).in_(["VALID", "DETAILSREQUIRED"]), 1),
+            else_=0,
+        )
+        reserved_case = case(
+            (func.upper(Ticket.status) == "RESERVED", 1),
+            else_=0,
+        )
         ticket_counts = (
             session.query(
                 Ticket.event_id,
                 Ticket.ticket_type_id,
-                func.count().label('total_count')
+                func.sum(sold_case).label("sold_count"),
+                func.sum(reserved_case).label("reserved_count"),
             )
             .filter(Ticket.event_id == event_id)
-            .group_by(
-                Ticket.event_id,
-                Ticket.ticket_type_id
-            )
+            .group_by(Ticket.event_id, Ticket.ticket_type_id)
             .all()
         )
 
@@ -455,10 +469,13 @@ def update_ticket_summary(session, schema: str, event_id: str):
         for count in ticket_counts:
             ticket_name = ticket_name_map.get(count.ticket_type_id, '')
             summary_id = f"{count.event_id}_{count.ticket_type_id}"
-            
+            sold = int(count.sold_count or 0)
+            reserved = int(count.reserved_count or 0)
+
             summary = session.get(TicketSummary, summary_id)
             if summary:
-                summary.total_count = count.total_count
+                summary.total_count = sold
+                summary.reserved_count = reserved
             else:
                 summary = TicketSummary(
                     id=summary_id,
@@ -468,7 +485,8 @@ def update_ticket_summary(session, schema: str, event_id: str):
                     ticket_name=ticket_name,
                     ticket_category=determine_ticket_group(ticket_name).value,
                     ticket_event_day=determine_ticket_event_day(ticket_name).value,
-                    total_count=count.total_count
+                    total_count=sold,
+                    reserved_count=reserved,
                 )
                 session.add(summary)
 
@@ -808,50 +826,73 @@ class BatchProcessor:
         self.max_workers = max_workers
 
     def process_tickets(self, api, db_manager: DatabaseManager, event_data: Dict, schema: str, region: str) -> int:
-        """Process tickets in optimized batches"""
+        """Process tickets: VALID,DETAILSREQUIRED first; then RESERVED if spectator-only reporting is on."""
+        total = self._process_tickets_for_status(
+            api, db_manager, event_data, schema, region, "VALID,DETAILSREQUIRED"
+        )
+        if is_only_spectator_report(region):
+            logger.info(
+                "Region %s: also ingesting RESERVED tickets (only_specator_report / only_spectator_report)",
+                region,
+            )
+            total += self._process_tickets_for_status(
+                api, db_manager, event_data, schema, region, "RESERVED"
+            )
+        return total
+
+    def _process_tickets_for_status(
+        self,
+        api,
+        db_manager: DatabaseManager,
+        event_data: Dict,
+        schema: str,
+        region: str,
+        status: str,
+    ) -> int:
+        """Process tickets in optimized batches for a single Vivenu status filter."""
         try:
-            # Get the first batch to determine total count
-            first_batch = api.get_tickets(skip=0, limit=1)
+            first_batch = api.get_tickets(skip=0, limit=1, status=status)
             total_tickets = first_batch.get("total", 0)
-            
+
             if not total_tickets:
-                logger.warning("No tickets found to process")
+                logger.info("No tickets for status=%s", status)
                 return 0
 
             total_batches = ceil(total_tickets / self.batch_size)
             processed_total = 0
-            logger.info(f"Processing {total_tickets} tickets in {total_batches} batches")
+            logger.info(
+                "Processing %s tickets (status=%s) in %s batches",
+                total_tickets,
+                status,
+                total_batches,
+            )
 
-            # Process in chunks to control parallelism
             for chunk_start in range(0, total_batches, self.max_workers):
                 chunk_end = min(chunk_start + self.max_workers, total_batches)
-                
-                # For httpx API which is async capable
+
                 if isinstance(api, VivenuHttpxAPI):
-                    # Process httpx API batches with ThreadPoolExecutor instead of asyncio
-                    # This avoids event loop issues
                     with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                         futures = []
                         for batch_num in range(chunk_start, chunk_end):
                             skip = batch_num * self.batch_size
                             futures.append(
                                 executor.submit(
-                                    self._process_httpx_batch, 
-                                    api.token, 
+                                    self._process_httpx_batch,
+                                    api.token,
                                     api.base_url,
                                     api.headers,
-                                    db_manager, 
-                                    event_data, 
-                                    schema, 
-                                    region, 
-                                    batch_num, 
-                                    skip, 
+                                    db_manager,
+                                    event_data,
+                                    schema,
+                                    region,
+                                    batch_num,
+                                    skip,
                                     total_batches,
-                                    self.batch_size
+                                    self.batch_size,
+                                    status,
                                 )
                             )
-                        
-                        # Process results
+
                         for future in as_completed(futures):
                             try:
                                 result = future.result()
@@ -860,33 +901,50 @@ class BatchProcessor:
                             except Exception as e:
                                 logger.error(f"Batch processing error: {str(e)}")
                 else:
-                    # For non-async APIs (like regular VivenuAPI), process sequentially
                     for batch_num in range(chunk_start, chunk_end):
                         try:
                             skip = batch_num * self.batch_size
-                            # Fetch batch
-                            response = api.get_tickets(skip=skip, limit=self.batch_size)
+                            response = api.get_tickets(
+                                skip=skip, limit=self.batch_size, status=status
+                            )
                             tickets = response.get("rows", [])
-                            
+
                             if tickets:
-                                # Process batch in a transaction
                                 with TransactionManager(db_manager) as session:
-                                    processed = process_batch(session, tickets, event_data, schema, region)
+                                    processed = process_batch(
+                                        session, tickets, event_data, schema, region
+                                    )
                                     processed_total += processed
                                     logger.info(
-                                        f"Batch {batch_num + 1}/{total_batches} complete. "
-                                        f"Processed: {processed}/{len(tickets)} tickets."
+                                        f"Batch {batch_num + 1}/{total_batches} complete "
+                                        f"(status={status}). Processed: {processed}/{len(tickets)} tickets."
                                     )
                         except Exception as e:
-                            logger.error(f"Error processing batch {batch_num + 1}/{total_batches}: {str(e)}")
+                            logger.error(
+                                f"Error processing batch {batch_num + 1}/{total_batches}: {str(e)}"
+                            )
 
             return processed_total
-            
+
         except Exception as e:
-            logger.error(f"Error in process_tickets: {str(e)}")
+            logger.error(f"Error in _process_tickets_for_status ({status}): {str(e)}")
             raise
-            
-    def _process_httpx_batch(self, token, base_url, headers, db_manager, event_data, schema, region, batch_num, skip, total_batches, batch_size):
+
+    def _process_httpx_batch(
+        self,
+        token,
+        base_url,
+        headers,
+        db_manager,
+        event_data,
+        schema,
+        region,
+        batch_num,
+        skip,
+        total_batches,
+        batch_size,
+        status: str,
+    ):
         """Process a single batch using httpx in its own thread and event loop"""
         try:
             # Create a new event loop for this thread
@@ -896,7 +954,20 @@ class BatchProcessor:
             try:
                 # Run the async processing
                 return loop.run_until_complete(
-                    self._process_single_batch(token, base_url, headers, db_manager, event_data, schema, region, batch_num, skip, total_batches, batch_size)
+                    self._process_single_batch(
+                        token,
+                        base_url,
+                        headers,
+                        db_manager,
+                        event_data,
+                        schema,
+                        region,
+                        batch_num,
+                        skip,
+                        total_batches,
+                        batch_size,
+                        status,
+                    )
                 )
             finally:
                 # Always clean up the event loop
@@ -906,7 +977,21 @@ class BatchProcessor:
             logger.error(f"Error processing batch {batch_num + 1}/{total_batches}: {str(e)}")
             raise
 
-    async def _process_single_batch(self, token, base_url, headers, db_manager, event_data, schema, region, batch_num, skip, total_batches, batch_size):
+    async def _process_single_batch(
+        self,
+        token,
+        base_url,
+        headers,
+        db_manager,
+        event_data,
+        schema,
+        region,
+        batch_num,
+        skip,
+        total_batches,
+        batch_size,
+        status: str,
+    ):
         """Process a single batch with a fresh httpx client"""
         # Create a new httpx client for this batch only with improved settings
         limits = httpx.Limits(
@@ -936,7 +1021,7 @@ class BatchProcessor:
                 # Fetch the tickets
                 url = f"{base_url}/tickets"
                 params = {
-                    "status": "VALID,DETAILSREQUIRED",
+                    "status": status,
                     "skip": skip,
                     "top": batch_size
                 }

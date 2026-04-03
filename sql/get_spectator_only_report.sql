@@ -5,7 +5,8 @@ WITH spectator_data AS (
             WHEN UPPER(ticket_name) LIKE '%2 DAYS%' THEN 'SPECTATOR | 2 DAYS'
             ELSE 'SPECTATOR'
         END AS spectator_type,
-        COALESCE(total_count, 0) AS total_count,
+        COALESCE(total_count, 0) AS sold_count,
+        COALESCE(reserved_count, 0) AS buying_count,
         CASE
             WHEN UPPER(ticket_name) LIKE '%3 DAYS%' THEN '3 DAYS'
             WHEN UPPER(ticket_name) LIKE '%2 DAYS%' THEN '2 DAYS'
@@ -22,12 +23,14 @@ SELECT
         WHEN summary.category LIKE 'SPECTATOR | 2 DAYS' THEN 'SPECTATOR | MULTI DAYS'
         ELSE CONCAT(summary.category, ' | ', summary.ticket_event_day)
     END AS display_category,
-    summary.total
+    summary.total_sold,
+    summary.total_buying
 FROM (
     SELECT 
         spectator_type AS category, 
         ticket_event_day, 
-        COALESCE(SUM(total_count), 0) AS total 
+        COALESCE(SUM(sold_count), 0) AS total_sold,
+        COALESCE(SUM(buying_count), 0) AS total_buying
     FROM spectator_data
     WHERE spectator_type IS NOT NULL
     GROUP BY spectator_type, ticket_event_day
