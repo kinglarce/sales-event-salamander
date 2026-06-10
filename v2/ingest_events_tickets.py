@@ -170,6 +170,7 @@ class TicketProcessor:
                 'updated_at': self._parse_datetime(ticket_data.get("updatedAt")),
                 'city': ticket_data.get("city"),
                 'country': ticket_data.get("country"),
+                'postal': ticket_data.get("postal"),
                 'customer_id': ticket_data.get("customerId"),
                 'gender': self._standardize_gender(extra_fields.get("gender")),
                 'birthday': extra_fields.get("birth_date"),

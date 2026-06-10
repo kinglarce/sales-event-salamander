@@ -49,6 +49,7 @@ class Ticket(Base):
     updated_at = Column(DateTime)
     city = Column(String)
     country = Column(String)
+    postal = Column(String)
     customer_id = Column(String)
     gender = Column(String)
     birthday = Column(String)

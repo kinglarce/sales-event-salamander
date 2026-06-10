@@ -32,9 +32,12 @@ Examples:
   # Run v1 with specific script
   python main.py --version v1 --script ingest_events_tickets
   
-  # Docker usage
+  # Docker usage (runs DNS + TCP check to EVENT_API_BASE_URL first)
   docker exec -it vivenu-app python main.py --version v1
   docker exec -it vivenu-app python main.py --version v2
+
+  # Skip connectivity probe (offline / known-good network)
+  python main.py --version v1 --skip-connectivity-check
         """
     )
     
@@ -62,8 +65,15 @@ Examples:
     parser.add_argument('--skip-fetch', action='store_true', default=skip_fetch, help='Skip API calls and only update summaries')
     parser.add_argument('--pipeline-config', default=pipeline_config, help='Path to pipeline configuration file (v2 only)')
     parser.add_argument('--pipeline-name', default=pipeline_name, help='Name of predefined pipeline to use (v2 only)')
-    
+    parser.add_argument(
+        '--skip-connectivity-check',
+        action='store_true',
+        help='Skip DNS/TCP probe for EVENT_API_BASE_URL (or set SKIP_CONNECTIVITY_CHECK=true)',
+    )
+
     args = parser.parse_args()
+    if os.getenv('SKIP_CONNECTIVITY_CHECK', '').lower() in ('true', '1'):
+        args.skip_connectivity_check = True
     
     if args.version == 'v1':
         run_v1(args)
@@ -73,7 +83,16 @@ Examples:
 def run_v1(args):
     """Run v1 system"""
     print("🚀 Starting Vivenu Events Ticket Scrapper v1...")
-    
+
+    if not args.skip_connectivity_check:
+        from utils.api_connectivity import check_event_api_reachable
+
+        ok, report = check_event_api_reachable()
+        print(report)
+        if not ok:
+            print("❌ Connectivity check failed; aborting. Use --skip-connectivity-check to bypass.")
+            sys.exit(1)
+
     if args.script:
         # Run specific script
         script_path = f"v1/{args.script}.py"
@@ -91,7 +110,16 @@ def run_v1(args):
 def run_v2(args):
     """Run v2 system"""
     print("🚀 Starting Vivenu Events Ticket Scrapper v2...")
-    
+
+    if not args.skip_connectivity_check and not args.skip_fetch:
+        from utils.api_connectivity import check_event_api_reachable
+
+        ok, report = check_event_api_reachable()
+        print(report)
+        if not ok:
+            print("❌ Connectivity check failed; aborting. Use --skip-connectivity-check to bypass.")
+            sys.exit(1)
+
     # Build command for v2 system
     cmd = ["python", "v2/run_ingest.py"]
     
