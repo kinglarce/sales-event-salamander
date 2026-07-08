@@ -167,12 +167,31 @@ class DataProvider:
             if result:
                 return {
                     'returning_athletes': result[0][0] or 0,
-                    'returning_to_city': result[0][1] or 0
+                    'returning_to_city': result[0][1] or 0,
+                    'first_time_participants': result[0][2] or 0,
                 }
-            return {'returning_athletes': 0, 'returning_to_city': 0}
+            return {'returning_athletes': 0, 'returning_to_city': 0, 'first_time_participants': 0}
         except Exception as e:
             logger.error(f"Error getting returning athletes data: {e}")
-            return {'returning_athletes': 0, 'returning_to_city': 0}
+            return {'returning_athletes': 0, 'returning_to_city': 0, 'first_time_participants': 0}
+
+    def get_all_athlete_countries_data(self, locality: str) -> pd.DataFrame:
+        try:
+            query = self._read_sql_file('get_athlete_countries_all.sql')
+            results = self.db.execute_query(query, {'locality': locality})
+            return pd.DataFrame(results, columns=['country_name', 'locality_type', 'count'])
+        except Exception as e:
+            logger.error(f"Error getting all athlete countries data: {e}")
+            return pd.DataFrame()
+
+    def get_gender_split_data(self) -> pd.DataFrame:
+        try:
+            query = self._read_sql_file('get_gender_split.sql')
+            results = self.db.execute_query(query)
+            return pd.DataFrame(results, columns=['gender', 'count'])
+        except Exception as e:
+            logger.error(f"Error getting gender split data: {e}")
+            return pd.DataFrame()
 
     def get_region_of_residence_data(self) -> pd.DataFrame:
         try:
@@ -1210,57 +1229,61 @@ class ExcelGenerator:
             locality = 'HK'  # fallback
             
         nationality_df = data_provider.get_nationality_data(locality)
+        athlete_countries_df = data_provider.get_all_athlete_countries_data(locality)
+        gender_split_df = data_provider.get_gender_split_data()
         
         current_row = 2
         
-        if not nationality_df.empty:
-            # Process athlete data
-            athlete_data = nationality_df[nationality_df['category'] == 'athlete']
-            if not athlete_data.empty:
-                # Write section header
-                worksheet.merge_range(current_row, 0, current_row, 2, 'Athlete Countries', section_format)
-                current_row += 1
-                
-                # Write headers
-                worksheet.write(current_row, 0, 'Country', header_format)
-                worksheet.write(current_row, 1, 'Local #', header_format)
-                worksheet.write(current_row, 2, 'International #', header_format)
-                current_row += 1
-                
-                # Get local and international data
-                local_data = athlete_data[athlete_data['locality_type'] == 'Local'].copy()
-                international_data = athlete_data[athlete_data['locality_type'] == 'International'].copy()
-                
-                # Convert count to numeric
-                local_data['count'] = pd.to_numeric(local_data['count'], errors='coerce')
-                international_data['count'] = pd.to_numeric(international_data['count'], errors='coerce')
-                
-                # Write local country first (should be only one)
-                for _, row in local_data.iterrows():
-                    worksheet.write(current_row, 0, row['country_name'], data_format)
-                    worksheet.write(current_row, 1, int(row['count']) if pd.notna(row['count']) else 0, number_format)
-                    worksheet.write(current_row, 2, '', data_format)
-                    current_row += 1
-                
-                # Write international countries (already sorted by count from SQL)
-                for _, row in international_data.iterrows():
-                    worksheet.write(current_row, 0, row['country_name'], data_format)
-                    worksheet.write(current_row, 1, '', data_format)
-                    worksheet.write(current_row, 2, int(row['count']) if pd.notna(row['count']) else 0, number_format)
-                    current_row += 1
-                
-                # Calculate totals
-                local_total = local_data['count'].sum()
-                international_total = international_data['count'].sum()
-                grand_total = float(local_total) + float(international_total)
-                
-                # Write totals
-                worksheet.write(current_row, 0, 'Grand Total (%)', total_format)
-                worksheet.write(current_row, 1, f"{int(local_total)} ({local_total/grand_total*100:.0f}%)", total_format)
-                worksheet.write(current_row, 2, f"{int(international_total)} ({international_total/grand_total*100:.0f}%)", total_format)
-                current_row += 2
+        if not athlete_countries_df.empty:
+            # Process athlete data (all countries, sorted by total count)
+            worksheet.merge_range(current_row, 0, current_row, 2, 'Athlete Countries', section_format)
+            current_row += 1
             
-            # Process spectator data
+            worksheet.write(current_row, 0, 'Country', header_format)
+            worksheet.write(current_row, 1, 'Local #', header_format)
+            worksheet.write(current_row, 2, 'International #', header_format)
+            current_row += 1
+            
+            athlete_countries_df['count'] = pd.to_numeric(athlete_countries_df['count'], errors='coerce').fillna(0)
+            
+            local_by_country = (
+                athlete_countries_df[athlete_countries_df['locality_type'] == 'Local']
+                .set_index('country_name')['count']
+            )
+            international_by_country = (
+                athlete_countries_df[athlete_countries_df['locality_type'] == 'International']
+                .set_index('country_name')['count']
+            )
+            
+            all_countries = sorted(
+                set(local_by_country.index) | set(international_by_country.index),
+                key=lambda country: (
+                    -(local_by_country.get(country, 0) + international_by_country.get(country, 0)),
+                    country,
+                ),
+            )
+            
+            local_total = 0
+            international_total = 0
+            for country in all_countries:
+                local_count = int(local_by_country.get(country, 0))
+                international_count = int(international_by_country.get(country, 0))
+                local_total += local_count
+                international_total += international_count
+                
+                worksheet.write(current_row, 0, country, data_format)
+                worksheet.write(current_row, 1, local_count if local_count else '', number_format if local_count else data_format)
+                worksheet.write(current_row, 2, international_count if international_count else '', number_format if international_count else data_format)
+                current_row += 1
+            
+            grand_total = local_total + international_total
+            if grand_total > 0:
+                worksheet.write(current_row, 0, 'Grand Total (%)', total_format)
+                worksheet.write(current_row, 1, f"{local_total} ({local_total/grand_total*100:.0f}%)", total_format)
+                worksheet.write(current_row, 2, f"{international_total} ({international_total/grand_total*100:.0f}%)", total_format)
+                current_row += 2
+        
+        if not nationality_df.empty:
             spectator_data = nationality_df[nationality_df['category'] == 'spectator']
             if not spectator_data.empty:
                 # Write section header
@@ -1304,6 +1327,35 @@ class ExcelGenerator:
                 worksheet.write(current_row, 0, 'Grand Total (%)', total_format)
                 worksheet.write(current_row, 1, f"{int(local_total)} ({local_total/grand_total*100:.0f}%)", total_format)
                 worksheet.write(current_row, 2, f"{int(international_total)} ({international_total/grand_total*100:.0f}%)", total_format)
+                current_row += 2
+
+        if not gender_split_df.empty:
+            worksheet.merge_range(current_row, 0, current_row, 1, 'Gender Split', section_format)
+            current_row += 1
+            
+            worksheet.write(current_row, 0, 'Gender', header_format)
+            worksheet.write(current_row, 1, 'Count', header_format)
+            current_row += 1
+            
+            gender_split_df['count'] = pd.to_numeric(gender_split_df['count'], errors='coerce').fillna(0)
+            gender_total = gender_split_df['count'].sum()
+            
+            for _, row in gender_split_df.iterrows():
+                count = int(row['count'])
+                worksheet.write(current_row, 0, row['gender'], data_format)
+                if gender_total > 0:
+                    worksheet.write(
+                        current_row, 1,
+                        f"{count} ({count/gender_total*100:.0f}%)",
+                        number_format,
+                    )
+                else:
+                    worksheet.write(current_row, 1, count, number_format)
+                current_row += 1
+            
+            if gender_total > 0:
+                worksheet.write(current_row, 0, 'Total', total_format)
+                worksheet.write(current_row, 1, int(gender_total), total_format)
                 current_row += 2
         
         # Set column widths
@@ -1414,6 +1466,10 @@ class ExcelGenerator:
         
         worksheet.write(current_row, left_col, 'Total returning athletes to city', data_format)
         worksheet.write(current_row, left_col + 1, returning_data['returning_to_city'], number_format)
+        current_row += 1
+
+        worksheet.write(current_row, left_col, 'Total first time participant', data_format)
+        worksheet.write(current_row, left_col + 1, returning_data['first_time_participants'], number_format)
         current_row += 2
 
         # 2. Region of Residence Section (Left side)
