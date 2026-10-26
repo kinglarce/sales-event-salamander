@@ -1,11 +1,42 @@
 import logging
 import re
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Pattern, Tuple
 
 from models.database import TicketUnderShop, TicketVolumes, TicketUnderShopSummary
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+# Secret shop groups matched from underShop names.
+# Category keys stay compact (e.g. partneraccess) so existing rows keep grouping together.
+# Display names are what Slack reports should show.
+# Patterns allow spaces, hyphens, or underscores between words, and no separator
+# (PARTNERACCESS and PARTNER ACCESS both map to partneraccess).
+# Partner also keeps PARTNERSHIP ACCESS from the previous matcher.
+_SECRET_SHOP_CATEGORY_DEFINITIONS: List[Tuple[str, str, str]] = [
+    ("klookaccess", "KLOOK ACCESS", r"KLOOK[-_\s]*ACCESS"),
+    ("headjudgesaccess", "HEAD JUDGES ACCESS", r"HEAD[-_\s]*JUDGES[-_\s]*ACCESS"),
+    ("marketingaccess", "MARKETING ACCESS", r"MARKETING[-_\s]*ACCESS"),
+    ("partneraccess", "PARTNER ACCESS", r"PARTNER(?:SHIP)?[-_\s]*ACCESS"),
+    ("staffaccess", "STAFF ACCESS", r"STAFF[-_\s]*ACCESS"),
+]
+
+SECRET_SHOP_CATEGORIES: List[Tuple[str, str, Pattern[str]]] = [
+    (key, display, re.compile(pattern))
+    for key, display, pattern in _SECRET_SHOP_CATEGORY_DEFINITIONS
+]
+SECRET_SHOP_CATEGORY_ORDER: List[str] = [key for key, _, _ in SECRET_SHOP_CATEGORIES]
+SECRET_SHOP_CATEGORY_DISPLAY_NAMES: Dict[str, str] = {
+    key: display for key, display, _ in SECRET_SHOP_CATEGORIES
+}
+
+
+def get_shop_category_display_name(category: str) -> str:
+    """Map a stored shop_category key to the Slack report label."""
+    if not category:
+        return ""
+    return SECRET_SHOP_CATEGORY_DISPLAY_NAMES.get(category.lower(), category.upper())
+
 
 class UnderShopProcessor:
     """Processes underShops data from event JSON"""
@@ -24,17 +55,11 @@ class UnderShopProcessor:
         # Ignore shops with DEPRECATED in the name
         if "DEPRECATED" in shop_name_upper:
             return None
-        
-        # Check for GYM ACCESS variations (with or without spaces/delimiters)
-        # gym_pattern = re.search(r'GYM[-_\s]*ACCESS', shop_name_upper)
-        # if gym_pattern:
-        #     return "htcaccess"
-                
-        # Check for PARTNERSHIP ACCESS variations (with or without spaces/delimiters)
-        partnership_pattern = re.search(r'PARTNERSHIP[-_\s]*ACCESS', shop_name_upper)
-        if partnership_pattern:
-            return "partneraccess"
-                
+
+        for category_key, _, pattern in SECRET_SHOP_CATEGORIES:
+            if pattern.search(shop_name_upper):
+                return category_key
+
         return None
 
     def normalize_shop_name(self, name: str) -> str:
@@ -109,7 +134,9 @@ class UnderShopProcessor:
                     
                     logger.debug(f"Processed {active_tickets} active tickets for shop {shop_id}")
                 else:
-                    logger.debug(f"Skipping underShop {shop_id} - '{shop_name}' without required GYM ACCESS/PARTNERSHIP ACCESS keywords")
+                    logger.debug(
+                        f"Skipping underShop {shop_id} - '{shop_name}' without a supported secret shop keyword"
+                    )
                     
             # Commit changes
             self.session.commit()
@@ -269,6 +296,7 @@ def update_under_shop_summary(session, schema: str, event_id: str) -> None:
             if summary:
                 summary.ticket_count = count.ticket_count
                 summary.ticket_volume = ticket_volume
+                summary.shop_category = count.shop_category
                 summary.updated_at = datetime.utcnow()
                 logger.debug(f"Updated summary for {summary_id}: {count.ticket_count} tickets, volume: {ticket_volume}")
             else:

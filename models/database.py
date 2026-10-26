@@ -101,7 +101,7 @@ class TicketUnderShop(Base):
     event_id = Column(String, ForeignKey("events.id"), nullable=False)
     shop_id = Column(String, nullable=False)  # _id from underShops
     shop_name = Column(String)  # Trimmed name from underShops
-    shop_category = Column(String)  # Derived from customerTags with HTCACCESS or PARTNERACCESS prefix
+    shop_category = Column(String)  # Derived from shop name: klookaccess, headjudgesaccess, marketingaccess, partneraccess, staffaccess
     active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

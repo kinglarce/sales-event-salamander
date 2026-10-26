@@ -27,7 +27,7 @@ def determine_ticket_group(ticket_name: str) -> TicketCategory:
         return TicketCategory.DOUBLES
     elif 'relay' in name_lower:
         return TicketCategory.RELAY
-    elif 'spectator' in name_lower:
+    elif 'spectator' in name_lower or ('youngstar' in name_lower and 'guardian' in name_lower):
         return TicketCategory.SPECTATOR
     return TicketCategory.SINGLE
 
