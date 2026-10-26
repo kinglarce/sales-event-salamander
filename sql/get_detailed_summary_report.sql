@@ -52,7 +52,8 @@ single_double_data AS (
             WHEN ticket_name LIKE '%hyrox doubles men%' THEN 'HYROX DOUBLES MEN'
             WHEN ticket_name LIKE '%hyrox doubles mixed%' THEN 'HYROX DOUBLES MIXED'
 
-            -- Spectators
+            -- Spectators. Guardian is reported on its own, not inside this bucket.
+            WHEN ticket_name LIKE '%guardian%' THEN NULL
             WHEN ticket_category = 'spectator' THEN 'Spectator'
             ELSE NULL
         END AS ticket_group,
@@ -60,6 +61,32 @@ single_double_data AS (
     FROM ticket_data
     WHERE ticket_name LIKE 'hyrox%'
        OR ticket_category = 'spectator'
+),
+
+-- Youngstars divisions are age ranges (boys/girls, 8-9 through 14-15).
+youngstars_data AS (
+    SELECT
+        'YOUNGSTARS '
+            || CASE WHEN ticket_name ~ 'girl' THEN 'GIRLS' ELSE 'BOYS' END
+            || ' ('
+            || CASE
+                WHEN ticket_name ~ '(^|[^0-9])8[^0-9]{{1,3}}9([^0-9]|$)' THEN '8-9'
+                WHEN ticket_name ~ '(^|[^0-9])10[^0-9]{{1,3}}11([^0-9]|$)' THEN '10-11'
+                WHEN ticket_name ~ '(^|[^0-9])12[^0-9]{{1,3}}13([^0-9]|$)' THEN '12-13'
+                ELSE '14-15'
+            END
+            || ' Years)' AS youngstars_type,
+        total_count
+    FROM ticket_data
+    WHERE ticket_name LIKE '%youngstar%'
+      AND ticket_name ~ 'boy|girl'
+      AND ticket_name ~ '(^|[^0-9])(8[^0-9]{{1,3}}9|10[^0-9]{{1,3}}11|12[^0-9]{{1,3}}13|14[^0-9]{{1,3}}15)([^0-9]|$)'
+),
+
+guardian_data AS (
+    SELECT 'YOUNGSTARS Guardian' AS guardian_type, total_count
+    FROM ticket_data
+    WHERE ticket_name LIKE '%guardian%'
 )
 
 -- Final aggregation with capacity information
@@ -98,6 +125,18 @@ FROM (
         FROM relay_data
         WHERE relay_type IS NOT NULL
         GROUP BY relay_type
+
+        UNION ALL
+
+        SELECT youngstars_type AS category, SUM(total_count) AS total
+        FROM youngstars_data
+        GROUP BY youngstars_type
+
+        UNION ALL
+
+        SELECT guardian_type AS category, SUM(total_count) AS total
+        FROM guardian_data
+        GROUP BY guardian_type
     ) aggregated
     GROUP BY category
 ) summary

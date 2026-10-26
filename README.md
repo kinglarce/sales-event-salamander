@@ -91,6 +91,9 @@ A comprehensive data ingestion and processing system for Vivenu events and ticke
 docker-compose up --build -d app
 docker-compose up --build -d app cron
 
+# Check API connectivity
+docker exec -it vivenu-app python3 /app/utils/api_connectivity.py
+
 # Run v1 system (default)
 docker exec -it vivenu-app python main.py --version v1
 

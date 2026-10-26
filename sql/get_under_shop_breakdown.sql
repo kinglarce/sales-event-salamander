@@ -77,6 +77,28 @@ single_double_data AS (
     FROM under_shop_data
     WHERE LOWER(ticket_name) LIKE 'hyrox%'
       AND LOWER(ticket_name) NOT LIKE '%relay%'
+),
+
+youngstars_data AS (
+    SELECT
+        shop_category,
+        'YOUNGSTARS '
+            || CASE WHEN LOWER(ticket_name) ~ 'girl' THEN 'GIRLS' ELSE 'BOYS' END
+            || ' ('
+            || CASE
+                WHEN LOWER(ticket_name) ~ '(^|[^0-9])8[^0-9]{{1,3}}9([^0-9]|$)' THEN '8-9'
+                WHEN LOWER(ticket_name) ~ '(^|[^0-9])10[^0-9]{{1,3}}11([^0-9]|$)' THEN '10-11'
+                WHEN LOWER(ticket_name) ~ '(^|[^0-9])12[^0-9]{{1,3}}13([^0-9]|$)' THEN '12-13'
+                ELSE '14-15'
+            END
+            || ' Years)' AS youngstars_type,
+        total_ticket_count,
+        total_ticket_volume,
+        ticket_category
+    FROM under_shop_data
+    WHERE LOWER(ticket_name) LIKE '%youngstar%'
+      AND LOWER(ticket_name) ~ 'boy|girl'
+      AND LOWER(ticket_name) ~ '(^|[^0-9])(8[^0-9]{{1,3}}9|10[^0-9]{{1,3}}11|12[^0-9]{{1,3}}13|14[^0-9]{{1,3}}15)([^0-9]|$)'
 )
 
 -- Final aggregation grouped by shop_category
@@ -121,6 +143,16 @@ FROM (
         ticket_category
     FROM relay_data
     WHERE relay_type IS NOT NULL
+
+    UNION ALL
+
+    SELECT
+        shop_category,
+        youngstars_type AS category,
+        total_ticket_count,
+        total_ticket_volume,
+        ticket_category
+    FROM youngstars_data
 ) combined
 LEFT JOIN {SCHEMA}.ticket_capacity_configs tc 
     ON tc.ticket_group = combined.category

@@ -18,6 +18,10 @@ from slack_sdk.errors import SlackApiError
 from dotenv import load_dotenv
 from typing import Dict, List, Optional, Any, Tuple
 import pytz
+from utils.under_shop_processor import (
+    SECRET_SHOP_CATEGORY_ORDER,
+    get_shop_category_display_name,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -36,6 +40,51 @@ if os.getenv('ENABLE_FILE_LOGGING', 'true').strip().lower() in ('true', '1'):
     logging.getLogger().addHandler(file_handler)
 
 logger = logging.getLogger(__name__)
+
+# Slack rejects a section block whose text is longer than 3000 characters.
+SLACK_SECTION_TEXT_LIMIT = 2900
+
+
+def split_mrkdwn(text: str, limit: int = SLACK_SECTION_TEXT_LIMIT) -> List[str]:
+    """Split mrkdwn into section-sized chunks. Fenced tables keep their header on each chunk."""
+    if len(text) <= limit:
+        return [text]
+
+    if text.startswith("```\n") and text.rstrip().endswith("```"):
+        inner = text[len("```\n"):]
+        if inner.endswith("```"):
+            inner = inner[:-3]
+        lines = inner.splitlines()
+        header = lines[:2]
+        rows = lines[2:]
+
+        def render(chunk_lines: List[str]) -> str:
+            return "```\n" + "\n".join(chunk_lines) + "\n```"
+
+        chunks: List[str] = []
+        current = list(header)
+        for row in rows:
+            candidate = current + [row]
+            if len(render(candidate)) > limit and len(current) > len(header):
+                chunks.append(render(current))
+                current = list(header) + [row]
+            else:
+                current = candidate
+        if len(current) > len(header):
+            chunks.append(render(current))
+        return chunks or [text[:limit]]
+
+    chunks = []
+    current = ""
+    for line in text.splitlines(keepends=True):
+        if current and len(current) + len(line) > limit:
+            chunks.append(current)
+            current = line
+        else:
+            current += line
+    if current:
+        chunks.append(current)
+    return chunks or [text[:limit]]
 
 class DatabaseManager:
     """Handles database connections and queries"""
@@ -444,6 +493,17 @@ class SlackReporter:
         table += "```"
         return table
 
+    def append_text_blocks(self, blocks: List[Dict[str, Any]], text: str) -> None:
+        """Append one Slack section per chunk so a long table stays under the text limit."""
+        for chunk in split_mrkdwn(text):
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": chunk
+                }
+            })
+
     def format_summary_table_with_capacity(
         self,
         summary_data: List[Tuple[str, Any]],
@@ -453,7 +513,10 @@ class SlackReporter:
         Max Cap and Oversell Cap are shown only on the Total_athletes row."""
         if not summary_data:
             return ""
-        group_width = 18  # Narrow column for Slack readability
+        # Youngstars division names include the age range, so the column has to
+        # fit "Youngstars Girls (14-15 Years)". Other events stay narrow.
+        is_youngstars = any("youngstar" in str(group).lower() for group, _ in summary_data)
+        group_width = 32 if is_youngstars else 18
         num_width = 10
         header_group = "Ticket Group"[:group_width].ljust(group_width)
 
@@ -587,28 +650,24 @@ class SlackReporter:
                 }
             ]
             
-            # Format main summary table (4 columns: Ticket Group | No. Pax | Max Cap | Oversell Cap)
+            # Format main summary table (4 columns: Ticket Group | No. Pax | Max Cap | Oversell Cap).
+            # Youngstars only needs the combined age ranges, spectators, and guardian.
             summary_data = [(k, v) for k, v in current_summary.items()]
+            if any(str(group).startswith("YOUNGSTARS (") for group, _ in summary_data):
+                summary_data = [
+                    (group, count) for group, count in summary_data
+                    if group not in ("All_singles", "All_doubles", "All_relays")
+                    and "BOYS" not in str(group)
+                    and "GIRLS" not in str(group)
+                ]
             summary_table = self.format_summary_table_with_capacity(summary_data, capacity_configs)
-            blocks.append({
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": summary_table
-                }
-            })
+            self.append_text_blocks(blocks, summary_table)
             
             # Add adaptive summary if available
             adaptive_data = self.get_adaptive_summary()
             if adaptive_data:
                 adaptive_table = self.format_table(adaptive_data, "\n*Adaptive Group*")
-                blocks.append({
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": adaptive_table
-                    }
-                })
+                self.append_text_blocks(blocks, adaptive_table)
             
             # Add detailed breakdown if available
             if detailed_breakdown:
@@ -630,14 +689,7 @@ class SlackReporter:
                     table_text += f"{item['ticket_group']:<50} | {item['total']:>12} | {item['percentage']:>12}\n"
                 
                 table_text += "```"
-                
-                blocks.append({
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": table_text
-                    }
-                })
+                self.append_text_blocks(blocks, table_text)
 
             # Per-prefix ticket breakdowns (CHARITY, KLOOK, or any future prefix); 2 cols: Ticket Group | No. Pax
             # Order: TICKET_PREFIX_ORDER env (e.g. "CHARITY,KLOOK,PARTNER") then alphabetical for any others
@@ -653,35 +705,29 @@ class SlackReporter:
                     "type": "section",
                     "text": {"type": "mrkdwn", "text": f"*{prefix_name} Ticket Breakdown:*"}
                 })
-                blocks.append({
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": self.format_prefix_breakdown_table(items)}
-                })
+                self.append_text_blocks(blocks, self.format_prefix_breakdown_table(items))
 
             # Add shop category breakdown if available
             if shop_category_breakdown:
-                # Sort categories - PARTNERACCESS first, then HTCACCESS and other variants
                 def get_category_order(category):
-                    if 'partneraccess' in category.lower():
-                        return 1
-                    elif 'htcaccess' in category.lower():
-                        return 2
-                    else:
-                        return 999
-                        
+                    key = category.lower()
+                    try:
+                        return SECRET_SHOP_CATEGORY_ORDER.index(key)
+                    except ValueError:
+                        return len(SECRET_SHOP_CATEGORY_ORDER)
+
                 sorted_categories = sorted(
-                    shop_category_breakdown.keys(), 
+                    shop_category_breakdown.keys(),
                     key=get_category_order
                 )
-                
+
                 for category in sorted_categories:
                     if not shop_category_breakdown[category]:
                         continue
-                        
+
                     blocks.append({"type": "divider"})
-                    
-                    # Format category display name
-                    category_display = category.upper()
+
+                    category_display = get_shop_category_display_name(category)
                     header_text = f"Secret Shop Redeemed Tickets Breakdown({category_display}):"
                     
                     blocks.append({
@@ -694,13 +740,7 @@ class SlackReporter:
                     
                     # Format shop category table
                     shop_table = self.format_shop_category_table(shop_category_breakdown[category])
-                    blocks.append({
-                        "type": "section",
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": shop_table
-                        }
-                    })
+                    self.append_text_blocks(blocks, shop_table)
             
             # Add addon summary if available
             if addon_summary and len(addon_summary) > 0:
@@ -716,13 +756,7 @@ class SlackReporter:
                 
                 # Format addon table
                 addon_table = self.format_addon_table(addon_summary)
-                blocks.append({
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": addon_table
-                    }
-                })
+                self.append_text_blocks(blocks, addon_table)
             
             # Add growth data if enabled and available
             if os.getenv('ENABLE_GROWTH_ANALYSIS', 'false').lower() == 'true' and growth_data and growth_data.get('changes'):
@@ -756,14 +790,7 @@ class SlackReporter:
                     table_text += f"{formatted_group:<30} | {data['first_value']:>8.0f} | {data['last_value']:>8.0f} | {data['absolute_change']:>8.0f} | {data['percent_change']:>7.1f}%\n"
                 
                 table_text += "```"
-                
-                blocks.append({
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": table_text
-                    }
-                })
+                self.append_text_blocks(blocks, table_text)
             
             # Add projections if enabled and available
             if os.getenv('ENABLE_PROJECTIONS', 'false').lower() == 'true' and projections is not None and not projections.empty:
@@ -798,14 +825,7 @@ class SlackReporter:
                         table_text += f"{group:<30} | {current_count:>8.0f} | {projected_count:>10.0f} | {increase:>10.0f} | {percent:>7.1f}%\n"
                 
                 table_text += "```"
-                
-                blocks.append({
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": table_text
-                    }
-                })
+                self.append_text_blocks(blocks, table_text)
                 
                 # Add a note about the projection methodology
                 blocks.append({
@@ -830,7 +850,8 @@ class SlackReporter:
             return True
             
         except SlackApiError as e:
-            logger.error(f"Error sending Slack report: {e.response['error']}")
+            messages = (e.response.get("response_metadata") or {}).get("messages")
+            logger.error(f"Error sending Slack report: {e.response['error']} {messages or ''}")
             return False
 
 class TicketAnalytics:

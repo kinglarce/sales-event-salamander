@@ -567,6 +567,18 @@ def create_event(session: sessionmaker, event_data: dict, schema: str) -> Event:
         logger.error(f"Error creating event: {e}")
         raise
 
+# DB Ticket column -> API extraFields keys (newest first, legacy last for backwards compatibility)
+TICKET_EXTRA_FIELD_ALIASES: Dict[str, List[str]] = {
+    'gender': ['script_gender', 'gender'],
+    'birthday': ['script_date_of_birth', 'birth_date'],
+    'nationality': ['script_nationality', 'nationality'],
+    'region_of_residence': ['script_region_of_residence', 'region_of_residence'],
+    'is_gym_affiliate': ['hyrox_training_clubs'],
+    'is_returning_athlete': ['returning_athlete'],
+    'is_returning_athlete_to_city': ['returning_athlete_city'],
+}
+
+
 class CustomFieldMapper:
     """Manages custom field mappings for different regions/schemas"""
     
@@ -593,12 +605,26 @@ class CustomFieldMapper:
         return mappings
 
     def get_field_value(self, extra_fields: Dict[str, Any], db_column: str) -> Optional[Any]:
-        """Get value from extra_fields using the mapped API field name"""
-        api_field = self._field_mappings.get(db_column)
-        if not api_field:
+        """
+        Resolve a ticket DB column from extraFields.
+
+        Priority:
+        1. Region-specific env override (EVENT_CONFIGS__{region}__field_{column})
+        2. Known aliases (new script_* names first, then legacy names)
+        """
+        if not extra_fields:
             return None
-        value = extra_fields.get(api_field)
-        return value
+
+        # Env override wins when present
+        env_field = self._field_mappings.get(db_column)
+        if env_field is not None and env_field in extra_fields:
+            return extra_fields.get(env_field)
+
+        for api_field in TICKET_EXTRA_FIELD_ALIASES.get(db_column, []):
+            if api_field in extra_fields:
+                return extra_fields.get(api_field)
+
+        return None
 
     def normalize_value(self, value: Optional[str]) -> Optional[str]:
         """
@@ -752,17 +778,22 @@ class TicketProcessor:
                 'updated_at': parse_datetime(ticket_data.get("updatedAt")),
                 'city': ticket_data.get("city"),
                 'country': ticket_data.get("country"),
+                'postal': ticket_data.get("postal"),
                 'customer_id': ticket_data.get("customerId"),
-                'gender': standardize_gender(extra_fields.get("gender")),
-                'birthday': extra_fields.get("birth_date"),
-                'age': calculate_age(extra_fields.get("birth_date")),
-                'nationality': extra_fields.get("nationality"),
-                'region_of_residence': extra_fields.get("region_of_residence"),
-                'is_gym_affiliate': extra_fields.get("hyrox_training_clubs"),
+                'gender': standardize_gender(self.field_mapper.get_field_value(extra_fields, 'gender')),
+                'birthday': self.field_mapper.get_field_value(extra_fields, 'birthday'),
+                'age': calculate_age(self.field_mapper.get_field_value(extra_fields, 'birthday')),
+                'nationality': self.field_mapper.get_field_value(extra_fields, 'nationality'),
+                'region_of_residence': self.field_mapper.get_field_value(extra_fields, 'region_of_residence'),
+                'is_gym_affiliate': self.field_mapper.get_field_value(extra_fields, 'is_gym_affiliate'),
                 'gym_affiliate': self.field_mapper.get_gym_affiliate(extra_fields),
                 'gym_affiliate_location': self.field_mapper.get_gym_affiliate_location(extra_fields),
-                'is_returning_athlete': normalize_yes_no(extra_fields.get("returning_athlete")),
-                'is_returning_athlete_to_city': normalize_yes_no(extra_fields.get("returning_athlete_city")),
+                'is_returning_athlete': normalize_yes_no(
+                    self.field_mapper.get_field_value(extra_fields, 'is_returning_athlete')
+                ),
+                'is_returning_athlete_to_city': normalize_yes_no(
+                    self.field_mapper.get_field_value(extra_fields, 'is_returning_athlete_to_city')
+                ),
                 'is_under_shop': is_under_shop,
                 'under_shop_id': under_shop_id,
                 'addons': addon_data  # Now just a string or None

@@ -101,6 +101,40 @@ spectator_data AS (
         prefix
     FROM ticket_data
     WHERE ticket_category = 'spectator'
+      AND ticket_name NOT LIKE '%guardian%'
+),
+
+-- Guardian is sold like a spectator and has no capacity row in the schema JSON.
+guardian_data AS (
+    SELECT
+        'YOUNGSTARS Guardian' AS guardian_type,
+        COALESCE(total_count, 0) AS total_count,
+        ticket_event_day,
+        prefix
+    FROM ticket_data
+    WHERE ticket_name LIKE '%guardian%'
+),
+
+-- Youngstars divisions are age ranges (boys/girls, 8-9 through 14-15), not HYROX categories.
+youngstars_data AS (
+    SELECT
+        'YOUNGSTARS '
+            || CASE WHEN ticket_name ~ 'girl' THEN 'GIRLS' ELSE 'BOYS' END
+            || ' ('
+            || CASE
+                WHEN ticket_name ~ '(^|[^0-9])8[^0-9]{{1,3}}9([^0-9]|$)' THEN '8-9'
+                WHEN ticket_name ~ '(^|[^0-9])10[^0-9]{{1,3}}11([^0-9]|$)' THEN '10-11'
+                WHEN ticket_name ~ '(^|[^0-9])12[^0-9]{{1,3}}13([^0-9]|$)' THEN '12-13'
+                ELSE '14-15'
+            END
+            || ' Years)' AS youngstars_type,
+        COALESCE(total_count, 0) AS total_count,
+        ticket_event_day,
+        prefix
+    FROM ticket_data
+    WHERE ticket_name LIKE '%youngstar%'
+      AND ticket_name ~ 'boy|girl'
+      AND ticket_name ~ '(^|[^0-9])(8[^0-9]{{1,3}}9|10[^0-9]{{1,3}}11|12[^0-9]{{1,3}}13|14[^0-9]{{1,3}}15)([^0-9]|$)'
 ),
 
 -- Aggregated by category, day, and prefix (so we can split main vs CHARITY vs KLOOK in Python)
@@ -114,6 +148,10 @@ summary_with_prefix AS (
         SELECT relay_type AS category, total_count, ticket_event_day, prefix FROM relay_data WHERE relay_type IS NOT NULL
         UNION ALL
         SELECT spectator_type AS category, total_count, ticket_event_day, prefix FROM spectator_data WHERE spectator_type IS NOT NULL
+        UNION ALL
+        SELECT guardian_type AS category, total_count, ticket_event_day, prefix FROM guardian_data
+        UNION ALL
+        SELECT youngstars_type AS category, total_count, ticket_event_day, prefix FROM youngstars_data
     ) aggregated
     GROUP BY category, ticket_event_day, prefix
 )
